@@ -169,15 +169,23 @@ ACTUATOR_GAINS = [
 # upright and the CoM sits over the feet.
 #   hip_pitch (negative = lean forward) + knee - ankle ≈ 0
 # e.g.  -0.4  +  0.8  - 0.4  = 0  ✓
+# CoM compensation note:
+# A forward waist lean of θ shifts the upper-body CoM forward by
+# ~L_upper * sin(θ).  Reducing ankle dorsiflexion by a similar fraction
+# (making ankle_pitch less negative) shifts the contact reaction point
+# backward, keeping the net CoM over the support polygon.
+# Empirically: ankle_offset ≈ +0.05 per 0.1 rad of waist_pitch works well.
 STAND_POSE = {
-    # Left leg
+    # Left leg — ankle slightly less negative to compensate forward lean
     "left_hip_pitch_joint":   -0.4,
     "left_knee_joint":         0.8,
-    "left_ankle_pitch_joint": -0.4,
+    "left_ankle_pitch_joint": -0.35,   # was -0.4; +0.05 to offset waist lean
     # Right leg (mirror)
     "right_hip_pitch_joint":   -0.4,
     "right_knee_joint":         0.8,
-    "right_ankle_pitch_joint": -0.4,
+    "right_ankle_pitch_joint": -0.35,
+    # Waist pitched forward for stability (keeps CoM over feet during motion)
+    "waist_pitch_joint":        0.12,
     # Arms slightly out to improve lateral stability
     "left_shoulder_roll_joint":   0.2,
     "right_shoulder_roll_joint": -0.2,
@@ -185,12 +193,15 @@ STAND_POSE = {
 
 # Deep squat pose — roughly half-way down, limited by joint ranges
 SQUAT_POSE = {
+    # Ankles compensated for increased forward lean at depth
     "left_hip_pitch_joint":   -0.9,
     "left_knee_joint":         1.8,
-    "left_ankle_pitch_joint": -0.9,
+    "left_ankle_pitch_joint": -0.82,   # was -0.9; +0.08 offset for deeper lean
     "right_hip_pitch_joint":   -0.9,
     "right_knee_joint":         1.8,
-    "right_ankle_pitch_joint": -0.9,
+    "right_ankle_pitch_joint": -0.82,
+    # More forward lean at squat depth — natural and helps keep knees tracked
+    "waist_pitch_joint":        0.25,
     # Arms rise slightly when squatting for balance
     "left_shoulder_pitch_joint":  -0.3,
     "right_shoulder_pitch_joint": -0.3,
