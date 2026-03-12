@@ -19,6 +19,29 @@ import os
 import time
 
 # ---------------------------------------------------------------------------
+# macOS: mujoco.viewer.launch_passive requires mjpython.
+# Re-exec once via the mjpython wrapper if we haven't already.
+# We use a sentinel env-var because sys.executable stays as "pythonX.Y" even
+# inside mjpython (the wrapper sets argv[0]=sys.executable before execve-ing
+# the real binary, so basename(sys.executable) == "mjpython" is never true).
+# ---------------------------------------------------------------------------
+if sys.platform == "darwin" and os.environ.get("_RUNNING_UNDER_MJPYTHON") != "1":
+    import shutil
+    os.environ["_RUNNING_UNDER_MJPYTHON"] = "1"
+    _mjpython = shutil.which("mjpython") or os.path.join(
+        os.path.dirname(sys.executable), "mjpython"
+    )
+    if _mjpython and os.path.isfile(_mjpython):
+        # Pass the absolute script path so mjpython doesn't search cwd
+        _script = os.path.abspath(sys.argv[0])
+        os.execv(_mjpython, [_mjpython, _script] + sys.argv[1:])
+    else:
+        print(
+            "WARNING: mjpython not found — viewer may fail on macOS.\n"
+            "Install with:  pip install mujoco"
+        )
+
+# ---------------------------------------------------------------------------
 # IMPORTANT: This file is named "import mujoco.py", which shadows the real
 # mujoco package. We work around this by removing our directory from sys.path
 # temporarily, importing mujoco, then restoring it.
@@ -54,6 +77,15 @@ HEADLESS = "--no-viewer" in sys.argv
 SIMULATE_DT = 0.002    # 500 Hz physics step (matching ARK default)
 VIEWER_DT   = 0.02     # 50 Hz viewer refresh
 
+# Speed scale: 1.0 = real-time, 0.5 = half speed, 0.1 = slow-motion.
+# Without this the loop runs only 1 physics step per viewer frame
+# (SIMULATE_DT/VIEWER_DT = 0.1×), so the default of 1.0 fixes that.
+TIMESCALE = 1.0
+
+# How many physics steps to run per viewer frame so wall-clock matches
+# TIMESCALE.  e.g. VIEWER_DT=0.02, SIMULATE_DT=0.002, TIMESCALE=1.0 → 10.
+STEPS_PER_FRAME = max(1, round(VIEWER_DT / SIMULATE_DT * TIMESCALE))
+
 # Camera defaults
 CAM_DISTANCE  = 3.0
 CAM_ELEVATION = -20
@@ -83,13 +115,171 @@ G1_JOINT_NAMES = [
 ]
 
 # ---------------------------------------------------------------------------
-# Motor gain profiles (from ark_unitree_g1 UnitreeSdk2Bridge)
+# Motor gain profiles  (Kp = spring stiffness, Kd = damping)
+# Rule of thumb: Kd ≈ 2*sqrt(Kp * link_inertia).  Higher Kp = stiffer,
+# higher Kd = more damping (less oscillation).  Humanoids need high leg gains.
 # ---------------------------------------------------------------------------
 GAINS = {
-    "high_torque": {"kp": 300.0, "kd": 3.0},
-    "low_torque":  {"kp":  80.0, "kd": 3.0},
-    "wrist":       {"kp":  40.0, "kd": 1.5},
+    "leg":   {"kp": 500.0, "kd": 20.0},
+    "ankle": {"kp": 200.0, "kd": 10.0},
+    "waist": {"kp": 400.0, "kd": 15.0},
+    "arm":   {"kp": 150.0, "kd":  6.0},
+    "wrist": {"kp":  60.0, "kd":  2.0},
+    "hand":  {"kp":  10.0, "kd":  0.5},
 }
+
+# Per-actuator gain assignment (order matches <actuator> block in XML)
+# fmt: off
+ACTUATOR_GAINS = [
+    # Left leg
+    GAINS["leg"], GAINS["leg"], GAINS["leg"],    # hip pitch/roll/yaw
+    GAINS["leg"],                                  # knee
+    GAINS["ankle"], GAINS["ankle"],               # ankle pitch/roll
+    # Right leg
+    GAINS["leg"], GAINS["leg"], GAINS["leg"],
+    GAINS["leg"],
+    GAINS["ankle"], GAINS["ankle"],
+    # Waist
+    GAINS["waist"], GAINS["waist"], GAINS["waist"],
+    # Left arm
+    GAINS["arm"], GAINS["arm"], GAINS["arm"],    # shoulder pitch/roll/yaw
+    GAINS["arm"],                                  # elbow
+    GAINS["wrist"], GAINS["wrist"], GAINS["wrist"],  # wrist
+    # Left hand (7 joints: thumb0/1/2, middle0/1, index0/1)
+    GAINS["hand"], GAINS["hand"], GAINS["hand"],
+    GAINS["hand"], GAINS["hand"],
+    GAINS["hand"], GAINS["hand"],
+    # Right arm
+    GAINS["arm"], GAINS["arm"], GAINS["arm"],
+    GAINS["arm"],
+    GAINS["wrist"], GAINS["wrist"], GAINS["wrist"],
+    # Right hand
+    GAINS["hand"], GAINS["hand"], GAINS["hand"],
+    GAINS["hand"], GAINS["hand"],
+    GAINS["hand"], GAINS["hand"],
+]
+# fmt: on
+
+# ---------------------------------------------------------------------------
+# Default standing pose — desired joint angles in radians (one per actuator).
+# Joints not listed default to 0.0 (straight/neutral).
+# Tweak these to change the robot's standing posture.
+# ---------------------------------------------------------------------------
+# Standing pose: hip_pitch + knee + ankle must sum to ~0 so the torso stays
+# upright and the CoM sits over the feet.
+#   hip_pitch (negative = lean forward) + knee - ankle ≈ 0
+# e.g.  -0.4  +  0.8  - 0.4  = 0  ✓
+STAND_POSE = {
+    # Left leg
+    "left_hip_pitch_joint":   -0.4,
+    "left_knee_joint":         0.8,
+    "left_ankle_pitch_joint": -0.4,
+    # Right leg (mirror)
+    "right_hip_pitch_joint":   -0.4,
+    "right_knee_joint":         0.8,
+    "right_ankle_pitch_joint": -0.4,
+    # Arms slightly out to improve lateral stability
+    "left_shoulder_roll_joint":   0.2,
+    "right_shoulder_roll_joint": -0.2,
+}
+
+# Deep squat pose — roughly half-way down, limited by joint ranges
+SQUAT_POSE = {
+    "left_hip_pitch_joint":   -0.9,
+    "left_knee_joint":         1.8,
+    "left_ankle_pitch_joint": -0.9,
+    "right_hip_pitch_joint":   -0.9,
+    "right_knee_joint":         1.8,
+    "right_ankle_pitch_joint": -0.9,
+    # Arms rise slightly when squatting for balance
+    "left_shoulder_pitch_joint":  -0.3,
+    "right_shoulder_pitch_joint": -0.3,
+    "left_shoulder_roll_joint":   0.2,
+    "right_shoulder_roll_joint": -0.2,
+}
+
+# Squat cycle period in seconds (half down, half up)
+SQUAT_PERIOD = 4.0
+
+# Alias used by the rest of the script
+DEFAULT_POSE = STAND_POSE
+
+
+def squat_cycle(t: float, q_stand: np.ndarray, q_squat: np.ndarray,
+                period: float = SQUAT_PERIOD) -> np.ndarray:
+    """Smoothly interpolate between standing and squat pose.
+
+    Uses a raised-cosine so acceleration is zero at both ends (no jerk):
+        alpha = (1 - cos(2*pi*t/period)) / 2   ∈ [0, 1]
+    alpha=0 → standing, alpha=1 → full squat, then back to 0.
+    """
+    alpha = (1.0 - np.cos(2.0 * np.pi * t / period)) / 2.0
+    return (1.0 - alpha) * q_stand + alpha * q_squat
+
+
+def build_actuator_qpos_index(model: mujoco.MjModel) -> np.ndarray:
+    """Return an array mapping actuator index → qpos index.
+
+    MuJoCo lays out qpos as:
+      [0:7]   floating base (3 pos + 4 quat)
+      [7:]    one slot per 1-DOF joint, in joint-definition order
+
+    Each <motor> actuator references exactly one joint; this function
+    resolves that joint's qpos address via model.jnt_qposadr.
+    """
+    idx = np.zeros(model.nu, dtype=int)
+    for act_id in range(model.nu):
+        joint_id = model.actuator_trnid[act_id, 0]   # joint driven by actuator
+        idx[act_id] = model.jnt_qposadr[joint_id]
+    return idx
+
+
+def build_actuator_qvel_index(model: mujoco.MjModel) -> np.ndarray:
+    """Return an array mapping actuator index → qvel index (DOF address)."""
+    idx = np.zeros(model.nu, dtype=int)
+    for act_id in range(model.nu):
+        joint_id = model.actuator_trnid[act_id, 0]
+        idx[act_id] = model.jnt_dofadr[joint_id]
+    return idx
+
+
+def build_desired_pose(model: mujoco.MjModel, pose_dict: dict) -> np.ndarray:
+    """Convert a {joint_name: angle_rad} dict into a per-actuator array.
+
+    Actuators not present in pose_dict are set to 0.0 (neutral).
+    """
+    q_des = np.zeros(model.nu)
+    for act_id in range(model.nu):
+        joint_id = model.actuator_trnid[act_id, 0]
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, joint_id)
+        if name in pose_dict:
+            q_des[act_id] = pose_dict[name]
+    return q_des
+
+
+def pd_control(
+    q_des:  np.ndarray,
+    q:      np.ndarray,
+    dq_des: np.ndarray,
+    dq:     np.ndarray,
+    gains:  list,
+) -> np.ndarray:
+    """Compute PD torques for every actuator.
+
+    tau_i = Kp_i * (q_des_i - q_i) + Kd_i * (dq_des_i - dq_i)
+
+    Args:
+        q_des:  desired joint positions  [nu]
+        q:      current joint positions  [nu]   (sliced from data.qpos)
+        dq_des: desired joint velocities [nu]   (usually zeros)
+        dq:     current joint velocities [nu]   (sliced from data.qvel)
+        gains:  list of {"kp": float, "kd": float} dicts, length nu
+    Returns:
+        torques array [nu]
+    """
+    kp = np.array([g["kp"] for g in gains])
+    kd = np.array([g["kd"] for g in gains])
+    return kp * (q_des - q) + kd * (dq_des - dq)
 
 
 def print_scene_info(model: mujoco.MjModel):
@@ -133,6 +323,29 @@ def main():
     # Print scene info
     print_scene_info(model)
 
+    # ------------------------------------------------------------------
+    # Build PD controller indices and desired pose
+    # ------------------------------------------------------------------
+    qpos_idx = build_actuator_qpos_index(model)   # actuator → qpos slot
+    qvel_idx = build_actuator_qvel_index(model)   # actuator → qvel slot
+    q_des    = build_desired_pose(model, DEFAULT_POSE)  # target angles [nu]
+    dq_des   = np.zeros(model.nu)                 # target velocities (zero)
+
+    # Trim/extend gain list to actual actuator count
+    gains = ACTUATOR_GAINS[:model.nu]
+    while len(gains) < model.nu:
+        gains.append(GAINS["hand"])
+
+    # ------------------------------------------------------------------
+    # Initialise qpos to the desired standing pose so the robot starts
+    # balanced rather than collapsing from the default all-zeros state.
+    # ------------------------------------------------------------------
+    data.qpos[qpos_idx] = q_des          # set joint angles
+    data.qpos[2] = 0.78                  # z height: ~0.78 m clears the floor
+    data.qpos[3] = 1.0                   # quaternion w=1 → upright orientation
+    data.qpos[4:7] = 0.0                 # quaternion x,y,z = 0
+    mujoco.mj_forward(model, data)       # propagate kinematics
+
     # Quick physics sanity check (10 steps, no viewer)
     print("Running 10 physics steps (sanity check)...")
     for i in range(10):
@@ -155,26 +368,37 @@ def main():
     viewer.cam.azimuth   = CAM_AZIMUTH
     viewer.cam.lookat[:] = CAM_LOOKAT
 
-    print("\nSimulation running — close the viewer window to stop.\n")
-    print("Tip: For full ARK + Unitree SDK control, run:")
-    print("  cd ark_unitree_g1/tests/g1_mujoco_sim")
-    print("  python unitree_mujoco.py\n")
+    # Pre-build the two pose arrays for the squat cycle
+    q_stand = build_desired_pose(model, STAND_POSE)
+    q_squat = build_desired_pose(model, SQUAT_POSE)
+
+    print("\nSimulation running — robot will squat and stand on repeat.")
+    print("Close the viewer window to stop.\n")
 
     # ------------------------------------------------------------------
     # Simulation loop
     # ------------------------------------------------------------------
-    num_motors = model.nu
-
     while viewer.is_running():
         step_start = time.perf_counter()
 
-        # --- Control: zero torques (robot stands under gravity) ---
-        # Replace this section with your own controller logic.
-        # Example: apply small position targets to keep the robot standing
-        data.ctrl[:] = np.zeros(num_motors)
+        # Step physics STEPS_PER_FRAME times so simulation keeps pace with
+        # wall-clock at the requested TIMESCALE (default = real-time).
+        # PD torques are recomputed every physics step (not once per frame)
+        # so the controller always sees fresh joint state — prevents shaking.
+        for _ in range(STEPS_PER_FRAME):
+            # Squat cycle: smoothly blend stand ↔ squat based on sim time
+            q_des = squat_cycle(data.time, q_stand, q_squat)
 
-        # Step physics
-        mujoco.mj_step(model, data)
+            # PD: read current state and compute torques toward q_des
+            q  = data.qpos[qpos_idx]
+            dq = data.qvel[qvel_idx]
+            tau = pd_control(q_des, q, dq_des, dq, gains)
+
+            # Clip to actuator limits defined in the XML
+            tau = np.clip(tau, model.actuator_ctrlrange[:, 0],
+                               model.actuator_ctrlrange[:, 1])
+            data.ctrl[:] = tau
+            mujoco.mj_step(model, data)
 
         # Sync viewer at ~50 fps
         elapsed = time.perf_counter() - step_start
