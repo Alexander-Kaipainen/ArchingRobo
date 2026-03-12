@@ -14,10 +14,121 @@
     <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
       markrgb="0.8 0.8 0.8" width="300" height="300"/>
     <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+    <!-- Bench materials -->
+    <material name="bench_wood" rgba="0.55 0.35 0.17 1" specular="0.3" shininess="0.1"/>
+    <material name="bench_metal" rgba="0.25 0.25 0.27 1" specular="0.6" shininess="0.4"/>
+    <material name="steel_bar" rgba="0.5 0.5 0.55 1" specular="0.7" shininess="0.5"/>
   </asset>
 
   <worldbody>
-    <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+    <light pos="0 0 3" dir="0 0 -1" directional="true"/>
+    <light pos="1 2 3" dir="-0.2 -0.4 -1" diffuse="0.4 0.4 0.4" specular="0.2 0.2 0.2"/>
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
+
+    <!-- ============================================================ -->
+    <!-- COMPETITIVE FLAT BENCH PRESS STATION                          -->
+    <!-- A flat bench with rear uprights, J-hooks, and a loaded barbell -->
+    <!-- The bench is oriented so the robot faces the foot-end,        -->
+    <!-- sits, then lies back toward the uprights.                     -->
+    <!-- ============================================================ -->
+    <body name="bench_press" pos="0.9 0 0">
+
+      <!-- === FLAT BENCH PAD === -->
+      <!-- Long narrow pad: 1.2m long x 0.30m wide x 5cm thick, at 43cm height -->
+      <geom name="bp_pad" type="box" size="0.60 0.15 0.025"
+            pos="0 0 0.43" rgba="0.15 0.15 0.15 1" density="300"/>
+
+      <!-- === BENCH FRAME (under the pad) === -->
+      <!-- Two longitudinal rails -->
+      <geom name="bp_rail_l" type="box" size="0.55 0.02 0.02"
+            pos="0 0.12 0.39" material="bench_metal" density="2000"/>
+      <geom name="bp_rail_r" type="box" size="0.55 0.02 0.02"
+            pos="0 -0.12 0.39" material="bench_metal" density="2000"/>
+
+      <!-- Four bench legs -->
+      <geom name="bp_leg_fl" type="cylinder" size="0.025 0.19"
+            pos="0.50 0.12 0.19" material="bench_metal" density="2000"/>
+      <geom name="bp_leg_fr" type="cylinder" size="0.025 0.19"
+            pos="0.50 -0.12 0.19" material="bench_metal" density="2000"/>
+      <geom name="bp_leg_bl" type="cylinder" size="0.025 0.19"
+            pos="-0.50 0.12 0.19" material="bench_metal" density="2000"/>
+      <geom name="bp_leg_br" type="cylinder" size="0.025 0.19"
+            pos="-0.50 -0.12 0.19" material="bench_metal" density="2000"/>
+
+      <!-- === REAR UPRIGHTS (behind the head end) === -->
+      <!-- Two tall vertical posts at the head-end of the bench -->
+      <geom name="bp_upright_l" type="cylinder" size="0.03 0.55"
+            pos="-0.55 0.35 0.55" material="steel_bar" density="3000"/>
+      <geom name="bp_upright_r" type="cylinder" size="0.03 0.55"
+            pos="-0.55 -0.35 0.55" material="steel_bar" density="3000"/>
+
+      <!-- Cross-bar connecting the uprights at the top -->
+      <geom name="bp_crossbar" type="cylinder" size="0.02 0.35"
+            pos="-0.55 0 1.10" euler="1.5708 0 0" material="steel_bar" density="2000"/>
+
+      <!-- === J-HOOKS (barbell rests) === -->
+      <!-- Wider hooks with a back wall to cradle the bar -->
+      <geom name="bp_jhook_l_base" type="box" size="0.04 0.025 0.02"
+            pos="-0.55 0.28 0.95" rgba="0.7 0.1 0.1 1" density="3000"/>
+      <geom name="bp_jhook_l_back" type="box" size="0.015 0.025 0.04"
+            pos="-0.58 0.28 0.97" rgba="0.7 0.1 0.1 1" density="3000"/>
+      <geom name="bp_jhook_r_base" type="box" size="0.04 0.025 0.02"
+            pos="-0.55 -0.28 0.95" rgba="0.7 0.1 0.1 1" density="3000"/>
+      <geom name="bp_jhook_r_back" type="box" size="0.015 0.025 0.04"
+            pos="-0.58 -0.28 0.97" rgba="0.7 0.1 0.1 1" density="3000"/>
+
+      <!-- === FOOT PLATFORM (optional, for foot placement) === -->
+      <geom name="bp_footplate" type="box" size="0.15 0.25 0.01"
+            pos="0.55 0 0.01" rgba="0.2 0.2 0.2 1" density="500"/>
+    </body>
+
+    <!-- === BARBELL (top-level so it can have a freejoint) === -->
+    <!-- Absolute pos = bench_press pos (0.9,0,0) + local (-0.55,0,0.99) = (0.35, 0, 0.99) -->
+    <body name="barbell" pos="0.35 0 0.99">
+      <freejoint name="barbell_free"/>
+      <!-- Main bar: 2.2m / 7.2ft Olympic bar -->
+      <geom name="bar_shaft" type="cylinder" size="0.014 0.55"
+            euler="1.5708 0 0" material="steel_bar" density="4000"/>
+      <!-- Knurling markers (grip area, slightly thicker) -->
+      <geom name="bar_grip_l" type="cylinder" size="0.016 0.12"
+            pos="0 0.20 0" euler="1.5708 0 0" rgba="0.45 0.45 0.48 1" density="4000"/>
+      <geom name="bar_grip_r" type="cylinder" size="0.016 0.12"
+            pos="0 -0.20 0" euler="1.5708 0 0" rgba="0.45 0.45 0.48 1" density="4000"/>
+
+      <!-- Weight plates — left side -->
+      <geom name="plate_l1" type="cylinder" size="0.225 0.025"
+            pos="0 0.48 0" euler="1.5708 0 0" rgba="0.7 0.1 0.1 1" density="5000"/>
+      <geom name="plate_l2" type="cylinder" size="0.225 0.025"
+            pos="0 0.44 0" euler="1.5708 0 0" rgba="0.7 0.1 0.1 1" density="5000"/>
+
+      <!-- Weight plates — right side -->
+      <geom name="plate_r1" type="cylinder" size="0.225 0.025"
+            pos="0 -0.48 0" euler="1.5708 0 0" rgba="0.7 0.1 0.1 1" density="5000"/>
+      <geom name="plate_r2" type="cylinder" size="0.225 0.025"
+            pos="0 -0.44 0" euler="1.5708 0 0" rgba="0.7 0.1 0.1 1" density="5000"/>
+
+      <!-- Bar collars (hold the plates on) -->
+      <geom name="collar_l" type="cylinder" size="0.02 0.015"
+            pos="0 0.52 0" euler="1.5708 0 0" rgba="0.3 0.3 0.3 1" density="4000"/>
+      <geom name="collar_r" type="cylinder" size="0.02 0.015"
+            pos="0 -0.52 0" euler="1.5708 0 0" rgba="0.3 0.3 0.3 1" density="4000"/>
+    </body>
   </worldbody>
+
+  <!-- Equality constraints for bench press simulation -->
+  <equality>
+    <!-- Weld pelvis to bench so robot doesn't slide off (always active) -->
+    <!-- relpose: (x,y,z, qw,qx,qy,qz) of pelvis in bench_press frame -->
+    <!-- x=-0.25: shifted toward head-end; z=0.55: above pad top (0.455) -->
+    <!-- Quaternion 0.7071 0 -0.7071 0: -90° Y rotation = lying on back -->
+    <weld name="bench_lock" body1="pelvis" body2="bench_press"
+          relpose="-0.25 0 0.55 0.7071 0 -0.7071 0" active="true"/>
+    <!-- Weld barbell to left wrist for gripping (starts inactive, activated at t≈3.5s) -->
+    <weld name="grip_bar_l" body1="left_wrist_yaw_link" body2="barbell"
+          relpose="0 0.20 0 1 0 0 0" active="false"/>
+    <!-- Weld barbell to right wrist for gripping (starts inactive, activated at t≈3.5s) -->
+    <weld name="grip_bar_r" body1="right_wrist_yaw_link" body2="barbell"
+          relpose="0 -0.20 0 1 0 0 0" active="false"/>
+  </equality>
+
 </mujoco>
