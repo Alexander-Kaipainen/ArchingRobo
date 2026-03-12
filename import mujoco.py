@@ -14,22 +14,41 @@ For full SDK-based control, see:
   ark_unitree_g1/tests/g1_mujoco_sim/unitree_mujoco.py
 """
 
+import sys
+import os
+import time
+
+# ---------------------------------------------------------------------------
+# IMPORTANT: This file is named "import mujoco.py", which shadows the real
+# mujoco package. We work around this by removing our directory from sys.path
+# temporarily, importing mujoco, then restoring it.
+# ---------------------------------------------------------------------------
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+if _script_dir in sys.path:
+    sys.path.remove(_script_dir)
+
 import mujoco
 import mujoco.viewer
 import numpy as np
-import time
-import os
+
+# Restore script dir so relative imports still work if needed
+if _script_dir not in sys.path:
+    sys.path.insert(0, _script_dir)
 
 # ---------------------------------------------------------------------------
 # Configuration (mirrors ark_unitree_g1/tests/g1_mujoco_sim/config.py)
 # ---------------------------------------------------------------------------
 ROBOT = "g1"
 
-# Resolve the path to the Unitree G1 MuJoCo scene XML shipped with ark_unitree_g1
+# Resolve the path to the Unitree G1 MuJoCo scene XML
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROBOT_SCENE = os.path.join(
-    SCRIPT_DIR, "ark_unitree_g1", f"unitree_{ROBOT}", "mjcf", "scene_29dof_with_hand.xml"
+    SCRIPT_DIR, f"unitree_{ROBOT}", "mjcf", "scene_29dof_with_hand.xml"
 )
+
+# Set True to run headless (no viewer window — just load + step test)
+# Also activated with:  python "import mujoco.py" --no-viewer
+HEADLESS = "--no-viewer" in sys.argv
 
 # Simulation parameters
 SIMULATE_DT = 0.002    # 500 Hz physics step (matching ARK default)
@@ -102,9 +121,11 @@ def main():
         print("Make sure the ark_unitree_g1 repo was cloned inside this folder.")
         return
 
-    print(f"Loading Unitree {ROBOT.upper()} from:\n  {ROBOT_SCENE}\n")
+    print(f"Loading Unitree {ROBOT.upper()} from:\n  {ROBOT_SCENE}")
+    t0 = time.perf_counter()
     model = mujoco.MjModel.from_xml_path(ROBOT_SCENE)
     data = mujoco.MjData(model)
+    print(f"  Model loaded in {time.perf_counter() - t0:.2f}s")
 
     # Set simulation timestep
     model.opt.timestep = SIMULATE_DT
@@ -112,9 +133,20 @@ def main():
     # Print scene info
     print_scene_info(model)
 
+    # Quick physics sanity check (10 steps, no viewer)
+    print("Running 10 physics steps (sanity check)...")
+    for i in range(10):
+        mujoco.mj_step(model, data)
+    print(f"  OK — sim time = {data.time:.4f}s\n")
+
+    if HEADLESS:
+        print("Headless mode — skipping viewer. Model loaded successfully!")
+        return
+
     # ------------------------------------------------------------------
     # Launch passive viewer
     # ------------------------------------------------------------------
+    print("Launching MuJoCo viewer (this may take a moment)...")
     viewer = mujoco.viewer.launch_passive(model, data)
 
     # Configure camera
