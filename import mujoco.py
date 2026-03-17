@@ -66,7 +66,7 @@ ROBOT = "g1"
 # Resolve the path to the Unitree G1 MuJoCo scene XML
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROBOT_SCENE = os.path.join(
-    SCRIPT_DIR, f"unitree_{ROBOT}", "mjcf", "scene_29dof_with_hand.xml"
+    SCRIPT_DIR, f"unitree_{ROBOT}", "mjcf", "scene_barbell.xml"
 )
 
 # Set True to run headless (no viewer window — just load + step test)
@@ -177,15 +177,15 @@ ACTUATOR_GAINS = [
 # Empirically: ankle_offset ≈ +0.05 per 0.1 rad of waist_pitch works well.
 STAND_POSE = {
     # Left leg — ankle slightly less negative to compensate forward lean
-    "left_hip_pitch_joint":   -0.4,
-    "left_knee_joint":         0.8,
-    "left_ankle_pitch_joint": -0.35,   # was -0.4; +0.05 to offset waist lean
+    "left_hip_pitch_joint":   -0.28,
+    "left_knee_joint":         0.62,
+    "left_ankle_pitch_joint": -0.24,
     # Right leg (mirror)
-    "right_hip_pitch_joint":   -0.4,
-    "right_knee_joint":         0.8,
-    "right_ankle_pitch_joint": -0.35,
+    "right_hip_pitch_joint":   -0.28,
+    "right_knee_joint":         0.62,
+    "right_ankle_pitch_joint": -0.24,
     # Waist pitched forward for stability (keeps CoM over feet during motion)
-    "waist_pitch_joint":        0.12,
+    "waist_pitch_joint":        0.24,
     # Arms slightly out to improve lateral stability
     "left_shoulder_roll_joint":   0.2,
     "right_shoulder_roll_joint": -0.2,
@@ -193,39 +193,162 @@ STAND_POSE = {
 
 # Deep squat pose — roughly half-way down, limited by joint ranges
 SQUAT_POSE = {
-    # Ankles compensated for increased forward lean at depth
-    "left_hip_pitch_joint":   -0.9,
-    "left_knee_joint":         1.8,
-    "left_ankle_pitch_joint": -0.82,   # was -0.9; +0.08 offset for deeper lean
-    "right_hip_pitch_joint":   -0.9,
-    "right_knee_joint":         1.8,
-    "right_ankle_pitch_joint": -0.82,
-    # More forward lean at squat depth — natural and helps keep knees tracked
-    "waist_pitch_joint":        0.25,
-    # Arms rise slightly when squatting for balance
-    "left_shoulder_pitch_joint":  -0.3,
-    "right_shoulder_pitch_joint": -0.3,
-    "left_shoulder_roll_joint":   0.2,
-    "right_shoulder_roll_joint": -0.2,
+    "left_hip_pitch_joint":   -1.5,
+    "right_hip_pitch_joint":  -1.5,
+    "left_knee_joint":         2.6,
+    "right_knee_joint":        2.6,
+    "left_ankle_pitch_joint": -1.1,
+    "right_ankle_pitch_joint":-1.1,
+    # Forward-arched back for setup over bar (reduced to avoid toe overload)
+    "waist_pitch_joint":        0.92,
+    # Arms lowered/forward and moved outward to clear the thighs
+    "left_shoulder_pitch_joint":   -0.45,
+    "right_shoulder_pitch_joint":  -0.45,
+    "left_shoulder_roll_joint":     0.35,
+    "right_shoulder_roll_joint":   -0.35,
+    "left_elbow_joint":            0.05,
+    "right_elbow_joint":           0.05,
+    # Rotate hands 90° so approach is perpendicular to the bar
+    "left_wrist_roll_joint":       1.57,
+    "right_wrist_roll_joint":      1.57,
 }
 
+# The hand closed to grip the barbell
+hand_grip = {
+    "left_hand_middle_0_joint": 1.0,
+    "left_hand_index_0_joint":  1.0,
+    "left_hand_thumb_0_joint":  1.0,
+    "left_hand_thumb_1_joint":  1.0,
+    "right_hand_middle_0_joint": 1.0,
+    "right_hand_index_0_joint":  1.0,
+    "right_hand_thumb_0_joint":  1.0,
+    "right_hand_thumb_1_joint":  1.0,
+}
+
+SQUAT_GRAB_POSE = SQUAT_POSE.copy()
+SQUAT_GRAB_POSE.update(hand_grip)
+
+# After grab: drop hips a bit more before pressing up with legs
+GRAB_SINK_POSE = SQUAT_GRAB_POSE.copy()
+GRAB_SINK_POSE.update({
+    "left_hip_pitch_joint":    -1.65,
+    "right_hip_pitch_joint":   -1.65,
+    "left_knee_joint":          2.85,
+    "right_knee_joint":         2.85,
+    "left_ankle_pitch_joint":  -1.05,
+    "right_ankle_pitch_joint": -1.05,
+    "waist_pitch_joint":        1.05,
+})
+
+# Standing back up but holding the barbell
+STAND_CARRY_POSE = STAND_POSE.copy()
+STAND_CARRY_POSE.update({
+    "waist_pitch_joint":          0.34,
+    "left_hip_pitch_joint":      -0.24,
+    "right_hip_pitch_joint":     -0.24,
+    "left_knee_joint":            0.52,
+    "right_knee_joint":           0.52,
+    "left_ankle_pitch_joint":    -0.22,
+    "right_ankle_pitch_joint":   -0.22,
+    "left_shoulder_pitch_joint":   -0.5,
+    "right_shoulder_pitch_joint":  -0.5,
+    "left_shoulder_roll_joint":    0.0,
+    "right_shoulder_roll_joint":   0.0,
+    "left_elbow_joint":            1.0,
+    "right_elbow_joint":           1.0,
+    "left_wrist_roll_joint":       1.57,
+    "right_wrist_roll_joint":      1.57,
+})
+STAND_CARRY_POSE.update(hand_grip)
+
+# Final reach micro-pose blended in only when wrist is very close to bar
+FINAL_REACH_POSE = SQUAT_GRAB_POSE.copy()
+FINAL_REACH_POSE.update({
+    "waist_pitch_joint":            0.88,
+    "left_shoulder_pitch_joint":   -0.60,
+    "right_shoulder_pitch_joint":  -0.60,
+    "left_shoulder_roll_joint":     0.35,
+    "right_shoulder_roll_joint":   -0.35,
+    "left_elbow_joint":             0.35,
+    "right_elbow_joint":            0.35,
+})
+
 # Squat cycle period in seconds (half down, half up)
-SQUAT_PERIOD = 4.0
+SQUAT_PERIOD = 8.0
+
+# Grab timing inside normalized cycle phase [0, 1)
+GRAB_PHASE_ON = 0.30
+GRAB_PHASE_OFF = 0.92
+
+# Reach a little before grab and only attach when actually close.
+PRE_GRAB_PHASE_ON = 0.16
+GRAB_ATTACH_DIST = 0.14
+
+# Small local-frame correction so the bar sits in the hands instead of
+# clipping backward into knees during stand-up.
+BAR_ATTACH_NUDGE_LOCAL = np.array([0.03, 0.00, 0.06])
+
+# Approximate lateral hand placement on bar, in bar-local frame (meters).
+BAR_GRIP_OFFSET_Y = 0.18
+
+# When left wrist gets close to the bar, blend in FINAL_REACH_POSE.
+# Distances are in meters.
+APPROACH_DIST_START = 0.45
+APPROACH_DIST_END = 0.20
 
 # Alias used by the rest of the script
 DEFAULT_POSE = STAND_POSE
 
 
-def squat_cycle(t: float, q_stand: np.ndarray, q_squat: np.ndarray,
-                period: float = SQUAT_PERIOD) -> np.ndarray:
-    """Smoothly interpolate between standing and squat pose.
+def squat_cycle(
+    t: float,
+    q_stand: np.ndarray,
+    q_squat: np.ndarray,
+    q_grab: np.ndarray,
+    q_sink: np.ndarray,
+    q_carry: np.ndarray,
+    period: float = SQUAT_PERIOD,
+) -> np.ndarray:
+    """One-shot sequence: stand -> squat -> grab -> sink -> leg press -> drop -> stand."""
+    phase = min(max(t / period, 0.0), 1.0)  # clamp to [0, 1], no looping
+    
+    # 0.0 -> 0.2: Stand to Squat
+    if phase < 0.2:
+        alpha = (1.0 - np.cos(np.pi * (phase / 0.2))) / 2.0
+        return (1.0 - alpha) * q_stand + alpha * q_squat
+        
+    # 0.2 -> 0.3: Squat to Grab (close hands)
+    elif phase < 0.3:
+        alpha = (1.0 - np.cos(np.pi * ((phase - 0.2) / 0.1))) / 2.0
+        return (1.0 - alpha) * q_squat + alpha * q_grab
+        
+    # 0.3 -> 0.38: Grab to Sink (pull hips down)
+    elif phase < 0.38:
+        alpha = (1.0 - np.cos(np.pi * ((phase - 0.3) / 0.08))) / 2.0
+        return (1.0 - alpha) * q_grab + alpha * q_sink
 
-    Uses a raised-cosine so acceleration is zero at both ends (no jerk):
-        alpha = (1 - cos(2*pi*t/period)) / 2   ∈ [0, 1]
-    alpha=0 → standing, alpha=1 → full squat, then back to 0.
-    """
-    alpha = (1.0 - np.cos(2.0 * np.pi * t / period)) / 2.0
-    return (1.0 - alpha) * q_stand + alpha * q_squat
+    # 0.38 -> 0.46: Hold sink briefly
+    elif phase < 0.46:
+        return q_sink
+
+    # 0.46 -> 0.62: Sink to Carry (press with legs)
+    elif phase < 0.62:
+        alpha = (1.0 - np.cos(np.pi * ((phase - 0.46) / 0.16))) / 2.0
+        return (1.0 - alpha) * q_sink + alpha * q_carry
+
+    # 0.62 -> 0.74: Stand tall, holding
+    elif phase < 0.74:
+        return q_carry
+        
+    # 0.74 -> 0.9: Carry to Grab (squat back down to release)
+    elif phase < 0.9:
+        alpha = (1.0 - np.cos(np.pi * ((phase - 0.74) / 0.16))) / 2.0
+        return (1.0 - alpha) * q_carry + alpha * q_grab
+        
+    # 0.9 -> 1.0: Release and Stand Up
+    else:
+        alpha = (1.0 - np.cos(np.pi * ((phase - 0.9) / 0.1))) / 2.0
+        return (1.0 - alpha) * q_grab + alpha * q_stand
 
 
 def build_actuator_qpos_index(model: mujoco.MjModel) -> np.ndarray:
@@ -266,6 +389,17 @@ def build_desired_pose(model: mujoco.MjModel, pose_dict: dict) -> np.ndarray:
         if name in pose_dict:
             q_des[act_id] = pose_dict[name]
     return q_des
+
+
+def build_joint_to_actuator_map(model: mujoco.MjModel) -> dict:
+    """Return {joint_name: actuator_id} for 1-DOF motorized joints."""
+    mapping = {}
+    for act_id in range(model.nu):
+        joint_id = model.actuator_trnid[act_id, 0]
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, joint_id)
+        if name is not None:
+            mapping[name] = act_id
+    return mapping
 
 
 def pd_control(
@@ -311,6 +445,39 @@ def print_scene_info(model: mujoco.MjModel):
         name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, i)
         print(f"    [{i:2d}] {name}")
     print("=" * 60)
+
+
+def quat_conjugate(q: np.ndarray) -> np.ndarray:
+    return np.array([q[0], -q[1], -q[2], -q[3]], dtype=float)
+
+
+def quat_multiply(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+    return np.array([
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+    ], dtype=float)
+
+
+def quat_rotate(q: np.ndarray, v: np.ndarray) -> np.ndarray:
+    v_quat = np.array([0.0, v[0], v[1], v[2]], dtype=float)
+    return quat_multiply(quat_multiply(q, v_quat), quat_conjugate(q))[1:4]
+
+
+def normalize_quat(q: np.ndarray) -> np.ndarray:
+    return q / np.linalg.norm(q)
+
+
+def proximity_blend(distance: float, start: float, end: float) -> float:
+    """Return smooth blend alpha in [0,1] as distance shrinks start->end."""
+    if start <= end:
+        return 0.0
+    x = (start - distance) / (start - end)
+    x = min(max(x, 0.0), 1.0)
+    return x * x * (3.0 - 2.0 * x)
 
 
 def main():
@@ -379,12 +546,26 @@ def main():
     viewer.cam.azimuth   = CAM_AZIMUTH
     viewer.cam.lookat[:] = CAM_LOOKAT
 
-    # Pre-build the two pose arrays for the squat cycle
+    # Pre-build the pose arrays for the squat cycle
     q_stand = build_desired_pose(model, STAND_POSE)
     q_squat = build_desired_pose(model, SQUAT_POSE)
+    q_grab  = build_desired_pose(model, SQUAT_GRAB_POSE)
+    q_sink  = build_desired_pose(model, GRAB_SINK_POSE)
+    q_reach = build_desired_pose(model, FINAL_REACH_POSE)
+    q_carry = build_desired_pose(model, STAND_CARRY_POSE)
 
-    print("\nSimulation running — robot will squat and stand on repeat.")
+    print("\nSimulation running — robot will pick up barbell and stand on repeat.")
     print("Close the viewer window to stop.\n")
+
+    left_wrist_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "left_wrist_roll_link")
+    right_wrist_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "right_wrist_roll_link")
+    barbell_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "barbell")
+    barbell_joint_id = model.body_jntadr[barbell_body_id] if barbell_body_id >= 0 else -1
+    barbell_qposadr = model.jnt_qposadr[barbell_joint_id] if barbell_joint_id >= 0 else -1
+    barbell_qveladr = model.jnt_dofadr[barbell_joint_id] if barbell_joint_id >= 0 else -1
+    attached = False
+    attach_pos_local = np.zeros(3)
+    attach_quat_local = np.array([1.0, 0.0, 0.0, 0.0])
 
     # ------------------------------------------------------------------
     # Simulation loop
@@ -397,8 +578,96 @@ def main():
         # PD torques are recomputed every physics step (not once per frame)
         # so the controller always sees fresh joint state — prevents shaking.
         for _ in range(STEPS_PER_FRAME):
+            # One-shot normalized phase in [0, 1] (no repeat)
+            phase = min(max(data.time / SQUAT_PERIOD, 0.0), 1.0)
+            
+            grip_should_be_active = GRAB_PHASE_ON < phase < GRAB_PHASE_OFF
+            wrist_bar_dist = np.inf
+            left_dist = np.inf
+            right_dist = np.inf
+
+            if (
+                left_wrist_body_id >= 0
+                and right_wrist_body_id >= 0
+                and barbell_body_id >= 0
+                and barbell_joint_id >= 0
+                and model.jnt_type[barbell_joint_id] == mujoco.mjtJoint.mjJNT_FREE
+            ):
+                left_wrist_pos = data.xpos[left_wrist_body_id].copy()
+                right_wrist_pos = data.xpos[right_wrist_body_id].copy()
+                wrist_mid_pos = 0.5 * (left_wrist_pos + right_wrist_pos)
+                wrist_quat = normalize_quat(data.xquat[left_wrist_body_id].copy())
+                bar_pos = data.xpos[barbell_body_id].copy()
+                bar_quat = normalize_quat(data.xquat[barbell_body_id].copy())
+                left_grip_pos = bar_pos + quat_rotate(
+                    bar_quat, np.array([0.0, BAR_GRIP_OFFSET_Y, 0.0])
+                )
+                right_grip_pos = bar_pos + quat_rotate(
+                    bar_quat, np.array([0.0, -BAR_GRIP_OFFSET_Y, 0.0])
+                )
+                left_dist = np.linalg.norm(left_grip_pos - left_wrist_pos)
+                right_dist = np.linalg.norm(right_grip_pos - right_wrist_pos)
+                wrist_bar_dist = 0.5 * (left_dist + right_dist)
+
+                if (
+                    grip_should_be_active
+                    and left_dist <= GRAB_ATTACH_DIST
+                    and right_dist <= GRAB_ATTACH_DIST
+                    and not attached
+                ):
+                    attach_pos_local = quat_rotate(
+                        quat_conjugate(wrist_quat), bar_pos - wrist_mid_pos
+                    )
+                    attach_quat_local = normalize_quat(
+                        quat_multiply(quat_conjugate(wrist_quat), bar_quat)
+                    )
+                    attached = True
+                elif not grip_should_be_active:
+                    attached = False
+
+                if attached and barbell_qposadr >= 0 and barbell_qveladr >= 0:
+                    left_wrist_pos = data.xpos[left_wrist_body_id].copy()
+                    right_wrist_pos = data.xpos[right_wrist_body_id].copy()
+                    wrist_mid_pos = 0.5 * (left_wrist_pos + right_wrist_pos)
+                    wrist_quat = normalize_quat(data.xquat[left_wrist_body_id].copy())
+
+                    target_pos = (
+                        wrist_mid_pos
+                        + quat_rotate(wrist_quat, attach_pos_local)
+                        + quat_rotate(wrist_quat, BAR_ATTACH_NUDGE_LOCAL)
+                    )
+                    target_quat = normalize_quat(
+                        quat_multiply(wrist_quat, attach_quat_local)
+                    )
+
+                    data.qpos[barbell_qposadr:barbell_qposadr + 3] = target_pos
+                    data.qpos[barbell_qposadr + 3:barbell_qposadr + 7] = target_quat
+                    data.qvel[barbell_qveladr:barbell_qveladr + 6] = 0.0
+                    mujoco.mj_forward(model, data)
+
             # Squat cycle: smoothly blend stand ↔ squat based on sim time
-            q_des = squat_cycle(data.time, q_stand, q_squat)
+            q_des = squat_cycle(data.time, q_stand, q_squat, q_grab, q_sink, q_carry)
+
+            # Pre-grab reach behavior: move hands toward the bar first, then
+            # allow grab only when close enough.
+            if (
+                left_wrist_body_id >= 0
+                and right_wrist_body_id >= 0
+                and barbell_body_id >= 0
+                and PRE_GRAB_PHASE_ON < phase < GRAB_PHASE_OFF
+                and not attached
+            ):
+                dist_alpha = proximity_blend(
+                    wrist_bar_dist, APPROACH_DIST_START, APPROACH_DIST_END
+                )
+                phase_alpha = 1.0 - proximity_blend(
+                    phase, GRAB_PHASE_ON, PRE_GRAB_PHASE_ON
+                )
+                reach_alpha = max(dist_alpha, phase_alpha)
+                if phase >= GRAB_PHASE_ON:
+                    reach_alpha = max(reach_alpha, 0.95)
+                if reach_alpha > 0.0:
+                    q_des = (1.0 - reach_alpha) * q_des + reach_alpha * q_reach
 
             # PD: read current state and compute torques toward q_des
             q  = data.qpos[qpos_idx]

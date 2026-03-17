@@ -1,0 +1,21 @@
+<mujoco model="g1_scene_with_ground_barbell">
+    <include file="scene_29dof_with_hand.xml"/>
+    
+    <equality>
+        <!-- we use weld to firmly attach the barbell to the robot hand -->
+        <weld name="grab_weld" body1="left_wrist_roll_link" body2="barbell" active="false"/>
+    </equality>
+
+    <worldbody>
+        <!-- The barbell is on the ground. Standard bumper plates are 45cm diameter -> radius 0.225m 
+             This places the bar exactly at Z=0.225m, which is reachable by the robot's deepest squat without a rack! -->
+        <body name="barbell" pos="0.35 0 0.225">
+            <freejoint/>
+            <!-- Bar -->
+            <geom type="cylinder" fromto="0 -0.5 0 0 0.5 0" size="0.015" rgba="0.7 0.7 0.7 1" mass="0.01" friction="2 2 2"/>
+            <!-- Weight plates: align Z to Y using quaternion for perfectly horizontal 90deg orientation -->
+            <geom type="cylinder" size="0.225 0.04" pos="0 0.45 0" quat="0.7071068 0.7071068 0 0" rgba="0.1 0.1 0.1 1" mass="0.02" friction="2 2 2"/>
+            <geom type="cylinder" size="0.225 0.04" pos="0 -0.45 0" quat="0.7071068 0.7071068 0 0" rgba="0.1 0.1 0.1 1" mass="0.02" friction="2 2 2"/>
+        </body>
+    </worldbody>
+</mujoco>

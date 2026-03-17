@@ -1,0 +1,27 @@
+<mujoco model="g1_scene_with_barbell">
+    <include file="scene_29dof_with_hand.xml"/>
+    
+    <equality>
+        <!-- we use weld to firmly attach the barbell to the robot hand -->
+        <weld name="grab_weld" body1="left_wrist_roll_link" body2="barbell" active="false"/>
+    </equality>
+
+    <worldbody>
+        <!-- A simple rack to hold the barbell at the correct height -->
+        <body name="rack_left" pos="0.05 0.25 0.25">
+            <geom type="box" size="0.05 0.05 0.25" rgba="0.2 0.2 0.2 1"/>
+        </body>
+        <body name="rack_right" pos="0.05 -0.25 0.25">
+            <geom type="box" size="0.05 0.05 0.25" rgba="0.2 0.2 0.2 1"/>
+        </body>
+
+        <!-- The rack top is 0.5 (Z center is 0.25, half-extent is 0.25). Barbell radius is 0.015 -> Z=0.515 -->
+        <body name="barbell" pos="0.01 0 0.515">
+            <freejoint/>
+            <geom type="cylinder" size="0.015 0.5" rgba="0.7 0.7 0.7 1" mass="0.01" euler="90 0 0" friction="2 2 2"/>
+            <!-- The weight plates on the barbell -->
+            <geom type="cylinder" size="0.1 0.04" pos="0 0.45 0" rgba="0.1 0.1 0.1 1" mass="0.02" euler="90 0 0" friction="2 2 2"/>
+            <geom type="cylinder" size="0.1 0.04" pos="0 -0.45 0" rgba="0.1 0.1 0.1 1" mass="0.02" euler="90 0 0" friction="2 2 2"/>
+        </body>
+    </worldbody>
+</mujoco>
