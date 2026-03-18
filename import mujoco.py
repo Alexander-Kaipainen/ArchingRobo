@@ -53,6 +53,7 @@ if _script_dir in sys.path:
 import mujoco
 import mujoco.viewer
 import numpy as np
+from enum import Enum
 
 # Restore script dir so relative imports still work if needed
 if _script_dir not in sys.path:
@@ -123,8 +124,8 @@ GAINS = {
     "leg":   {"kp": 500.0, "kd": 20.0},
     "ankle": {"kp": 200.0, "kd": 10.0},
     "waist": {"kp": 400.0, "kd": 15.0},
-    "arm":   {"kp": 150.0, "kd":  6.0},
-    "wrist": {"kp":  60.0, "kd":  2.0},
+    "arm":   {"kp": 350.0, "kd": 14.0},
+    "wrist": {"kp": 120.0, "kd":  5.0},
     "hand":  {"kp":  10.0, "kd":  0.5},
 }
 
@@ -161,71 +162,372 @@ ACTUATOR_GAINS = [
 # fmt: on
 
 # ---------------------------------------------------------------------------
-# Default standing pose — desired joint angles in radians (one per actuator).
-# Joints not listed default to 0.0 (straight/neutral).
-# Tweak these to change the robot's standing posture.
+# Bench press motion definitions
 # ---------------------------------------------------------------------------
-# Standing pose: hip_pitch + knee + ankle must sum to ~0 so the torso stays
-# upright and the CoM sits over the feet.
-#   hip_pitch (negative = lean forward) + knee - ankle ≈ 0
-# e.g.  -0.4  +  0.8  - 0.4  = 0  ✓
-# CoM compensation note:
-# A forward waist lean of θ shifts the upper-body CoM forward by
-# ~L_upper * sin(θ).  Reducing ankle dorsiflexion by a similar fraction
-# (making ankle_pitch less negative) shifts the contact reaction point
-# backward, keeping the net CoM over the support polygon.
-# Empirically: ankle_offset ≈ +0.05 per 0.1 rad of waist_pitch works well.
-STAND_POSE = {
-    # Left leg — ankle slightly less negative to compensate forward lean
-    "left_hip_pitch_joint":   -0.4,
-    "left_knee_joint":         0.8,
-    "left_ankle_pitch_joint": -0.35,   # was -0.4; +0.05 to offset waist lean
-    # Right leg (mirror)
-    "right_hip_pitch_joint":   -0.4,
-    "right_knee_joint":         0.8,
-    "right_ankle_pitch_joint": -0.35,
-    # Waist pitched forward for stability (keeps CoM over feet during motion)
-    "waist_pitch_joint":        0.12,
-    # Arms slightly out to improve lateral stability
-    "left_shoulder_roll_joint":   0.2,
-    "right_shoulder_roll_joint": -0.2,
+class BenchPhase(Enum):
+    ALIGN = "align"
+    REACH = "reach"
+    GRASP_CLOSE = "grasp_close"
+    SYMMETRY_CAL = "symmetry_cal"
+    LOCKIN = "lockin"
+    LOAD_TRANSFER = "load_transfer"
+    DESCENT = "descent"
+    BOTTOM_PAUSE = "bottom_pause"
+    ASCENT = "ascent"
+    LOCKOUT = "lockout"
+
+
+def smoothstep(x: float) -> float:
+    x = float(np.clip(x, 0.0, 1.0))
+    return x * x * (3.0 - 2.0 * x)
+
+
+BENCH_LOCKOUT_POSE = {
+    "left_hip_pitch_joint":   -0.20,
+    "left_knee_joint":         0.48,
+    "left_ankle_pitch_joint": -0.12,
+    "right_hip_pitch_joint":   -0.20,
+    "right_knee_joint":         0.48,
+    "right_ankle_pitch_joint": -0.12,
+    "waist_pitch_joint":       -0.10,
+    "left_shoulder_pitch_joint":  -1.50,
+    "right_shoulder_pitch_joint": -1.50,
+    "left_shoulder_roll_joint":    0.60,
+    "right_shoulder_roll_joint":  -0.60,
+    "left_shoulder_yaw_joint":    -0.18,
+    "right_shoulder_yaw_joint":    0.18,
+    "left_elbow_joint":            0.05,
+    "right_elbow_joint":           0.05,
+    "left_wrist_roll_joint":       0.0,
+    "right_wrist_roll_joint":      0.0,
+    "left_wrist_pitch_joint":      0.0,
+    "right_wrist_pitch_joint":     0.0,
+    "left_wrist_yaw_joint":        0.0,
+    "right_wrist_yaw_joint":       0.0,
 }
 
-# Deep squat pose — roughly half-way down, limited by joint ranges
-SQUAT_POSE = {
-    # Ankles compensated for increased forward lean at depth
-    "left_hip_pitch_joint":   -0.9,
-    "left_knee_joint":         1.8,
-    "left_ankle_pitch_joint": -0.82,   # was -0.9; +0.08 offset for deeper lean
-    "right_hip_pitch_joint":   -0.9,
-    "right_knee_joint":         1.8,
-    "right_ankle_pitch_joint": -0.82,
-    # More forward lean at squat depth — natural and helps keep knees tracked
-    "waist_pitch_joint":        0.25,
-    # Arms rise slightly when squatting for balance
-    "left_shoulder_pitch_joint":  -0.3,
-    "right_shoulder_pitch_joint": -0.3,
-    "left_shoulder_roll_joint":   0.2,
-    "right_shoulder_roll_joint": -0.2,
+# Bottom: bar at chest with deep elbow flexion.
+BENCH_BOTTOM_POSE = {
+    "left_hip_pitch_joint":   -0.20,
+    "left_knee_joint":         0.48,
+    "left_ankle_pitch_joint": -0.12,
+    "right_hip_pitch_joint":   -0.20,
+    "right_knee_joint":         0.48,
+    "right_ankle_pitch_joint": -0.12,
+    "waist_pitch_joint":       -0.10,
+    "left_shoulder_pitch_joint":  -0.45,
+    "right_shoulder_pitch_joint": -0.45,
+    "left_shoulder_roll_joint":    0.60,
+    "right_shoulder_roll_joint":  -0.60,
+    "left_shoulder_yaw_joint":    -0.18,
+    "right_shoulder_yaw_joint":    0.18,
+    "left_elbow_joint":            1.65,
+    "right_elbow_joint":           1.65,
+    "left_wrist_roll_joint":       0.0,
+    "right_wrist_roll_joint":      0.0,
+    "left_wrist_pitch_joint":      0.0,
+    "right_wrist_pitch_joint":     0.0,
+    "left_wrist_yaw_joint":        0.0,
+    "right_wrist_yaw_joint":       0.0,
 }
 
-# Squat cycle period in seconds (half down, half up)
-SQUAT_PERIOD = 4.0
+# Setup and unrack match lockout for clean acquisition.
+BENCH_SETUP_POSE = BENCH_LOCKOUT_POSE.copy()
+BENCH_UNRACK_POSE = BENCH_LOCKOUT_POSE.copy()
 
-# Alias used by the rest of the script
-DEFAULT_POSE = STAND_POSE
+DEFAULT_POSE = BENCH_SETUP_POSE
+
+# Timing (seconds)
+ALIGN_TIME = 0.8
+REACH_TIME = 1.0
+GRASP_CLOSE_TIME = 0.9
+SYMMETRY_CAL_TIME = 0.5
+LOCKIN_TIME = 0.6
+LOAD_TRANSFER_TIME = 0.6
+DESCENT_TIME = 2.5
+BOTTOM_PAUSE_TIME = 0.8
+ASCENT_TIME = 1.5
+LOCKOUT_HOLD_TIME = 2.5
+
+# Visual barbell dimensions (rigid, constant length).
+BAR_TOTAL_LENGTH = 0.90
+BAR_SHAFT_RADIUS = 0.017
+BAR_PLATE_RADIUS = 0.06
+HAND_SPREAD_BIAS = 0.10
+
+GRIP_OPEN = {
+    "left_hand_thumb_0_joint": -0.20,
+    "left_hand_thumb_1_joint": -0.20,
+    "left_hand_thumb_2_joint": 0.05,
+    "left_hand_middle_0_joint": -0.20,
+    "left_hand_middle_1_joint": 0.05,
+    "left_hand_index_0_joint": -0.20,
+    "left_hand_index_1_joint": 0.05,
+    "right_hand_thumb_0_joint": -0.20,
+    "right_hand_thumb_1_joint": -0.20,
+    "right_hand_thumb_2_joint": 0.05,
+    "right_hand_middle_0_joint": -0.20,
+    "right_hand_middle_1_joint": 0.05,
+    "right_hand_index_0_joint": -0.20,
+    "right_hand_index_1_joint": 0.05,
+}
+
+GRIP_CLOSED = {
+    "left_hand_thumb_0_joint": 0.35,
+    "left_hand_thumb_1_joint": 0.60,
+    "left_hand_thumb_2_joint": 1.00,
+    "left_hand_middle_0_joint": -1.05,
+    "left_hand_middle_1_joint": 1.35,
+    "left_hand_index_0_joint": -1.00,
+    "left_hand_index_1_joint": 1.30,
+    "right_hand_thumb_0_joint": 0.35,
+    "right_hand_thumb_1_joint": 0.60,
+    "right_hand_thumb_2_joint": 1.00,
+    "right_hand_middle_0_joint": -1.05,
+    "right_hand_middle_1_joint": 1.35,
+    "right_hand_index_0_joint": -1.00,
+    "right_hand_index_1_joint": 1.30,
+}
 
 
-def squat_cycle(t: float, q_stand: np.ndarray, q_squat: np.ndarray,
-                period: float = SQUAT_PERIOD) -> np.ndarray:
-    """Smoothly interpolate between standing and squat pose.
+def blend_pose(q_a: np.ndarray, q_b: np.ndarray, alpha: float) -> np.ndarray:
+    return (1.0 - alpha) * q_a + alpha * q_b
 
-    Uses a raised-cosine so acceleration is zero at both ends (no jerk):
-        alpha = (1 - cos(2*pi*t/period)) / 2   ∈ [0, 1]
-    alpha=0 → standing, alpha=1 → full squat, then back to 0.
-    """
-    alpha = (1.0 - np.cos(2.0 * np.pi * t / period)) / 2.0
-    return (1.0 - alpha) * q_stand + alpha * q_squat
+
+class BenchPressController:
+    def __init__(self, model: mujoco.MjModel):
+        self.phase = BenchPhase.LOCKOUT
+        self.phase_time = 0.0
+        self.prev_bar_center = None
+
+        self.setup = build_desired_pose(model, BENCH_SETUP_POSE)
+        self.unrack = build_desired_pose(model, BENCH_UNRACK_POSE)
+        self.bottom = build_desired_pose(model, BENCH_BOTTOM_POSE)
+        self.lockout = build_desired_pose(model, BENCH_LOCKOUT_POSE)
+
+        self.joint_to_act = {}
+        for act_id in range(model.nu):
+            joint_id = model.actuator_trnid[act_id, 0]
+            jname = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, joint_id)
+            if jname:
+                self.joint_to_act[jname] = act_id
+
+        self.left_wrist_body = self._find_body_exact(model, "left_wrist_yaw_link")
+        self.right_wrist_body = self._find_body_exact(model, "right_wrist_yaw_link")
+        if self.left_wrist_body < 0:
+            self.left_wrist_body = self._find_body(model, ["left", "wrist"])
+        if self.right_wrist_body < 0:
+            self.right_wrist_body = self._find_body(model, ["right", "wrist"])
+        self.torso_body = self._find_body(model, ["torso"])
+        # Local offset from wrist_yaw frame toward true grip line on palm.
+        self.grip_offset_local = np.array([0.105, 0.0015, -0.008], dtype=np.float64)
+
+    def _find_body_exact(self, model: mujoco.MjModel, exact_name: str) -> int:
+        for body_id in range(model.nbody):
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_id)
+            if name == exact_name:
+                return body_id
+        return -1
+
+    def _find_body(self, model: mujoco.MjModel, tokens: list) -> int:
+        for body_id in range(model.nbody):
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_id)
+            if not name:
+                continue
+            n = name.lower()
+            if all(tok in n for tok in tokens):
+                return body_id
+        return -1
+
+    def _joint_q(self, model: mujoco.MjModel, data: mujoco.MjData, joint_name: str) -> float:
+        act_id = self.joint_to_act.get(joint_name)
+        if act_id is None:
+            return 0.0
+        joint_id = model.actuator_trnid[act_id, 0]
+        qpos_adr = model.jnt_qposadr[joint_id]
+        return float(data.qpos[qpos_adr])
+
+    def _grip_points(self, data: mujoco.MjData):
+        if self.left_wrist_body < 0 or self.right_wrist_body < 0:
+            return None, None
+
+        l_rot = data.xmat[self.left_wrist_body].reshape(3, 3)
+        r_rot = data.xmat[self.right_wrist_body].reshape(3, 3)
+        l_pos = data.xpos[self.left_wrist_body] + l_rot @ self.grip_offset_local
+        r_pos = data.xpos[self.right_wrist_body] + r_rot @ self.grip_offset_local
+        return l_pos, r_pos
+
+    def _phase_target(self) -> np.ndarray:
+        if self.phase == BenchPhase.LOCKOUT:
+            return self.lockout.copy()
+        if self.phase == BenchPhase.DESCENT:
+            a = smoothstep(self.phase_time / DESCENT_TIME)
+            return blend_pose(self.lockout, self.bottom, a)
+        if self.phase == BenchPhase.BOTTOM_PAUSE:
+            return self.bottom.copy()
+        if self.phase == BenchPhase.ASCENT:
+            a = smoothstep(self.phase_time / ASCENT_TIME)
+            return blend_pose(self.bottom, self.lockout, a)
+        return self.lockout.copy()
+
+    def _advance_phase(self, dt: float):
+        self.phase_time += dt
+        if self.phase == BenchPhase.LOCKOUT and self.phase_time >= LOCKOUT_HOLD_TIME:
+            self.phase = BenchPhase.DESCENT
+            self.phase_time = 0.0
+        elif self.phase == BenchPhase.DESCENT and self.phase_time >= DESCENT_TIME:
+            self.phase = BenchPhase.BOTTOM_PAUSE
+            self.phase_time = 0.0
+        elif self.phase == BenchPhase.BOTTOM_PAUSE and self.phase_time >= BOTTOM_PAUSE_TIME:
+            self.phase = BenchPhase.ASCENT
+            self.phase_time = 0.0
+        elif self.phase == BenchPhase.ASCENT and self.phase_time >= ASCENT_TIME:
+            self.phase = BenchPhase.LOCKOUT
+            self.phase_time = 0.0
+        elif self.phase == BenchPhase.LOCKOUT and self.phase_time >= LOCKOUT_HOLD_TIME:
+            self.phase = BenchPhase.DESCENT
+            self.phase_time = 0.0
+
+    def target(self, model: mujoco.MjModel, data: mujoco.MjData, dt: float) -> np.ndarray:
+        q_des = self._phase_target()
+
+        # Lock lower body and torso.
+        for jn in (
+            "left_hip_pitch_joint", "right_hip_pitch_joint",
+            "left_hip_roll_joint", "right_hip_roll_joint",
+            "left_hip_yaw_joint", "right_hip_yaw_joint",
+            "left_knee_joint", "right_knee_joint",
+            "left_ankle_pitch_joint", "right_ankle_pitch_joint",
+            "left_ankle_roll_joint", "right_ankle_roll_joint",
+            "waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint",
+        ):
+            aid = self.joint_to_act.get(jn)
+            if aid is not None:
+                q_des[aid] = self.setup[aid]
+
+        # Lock only shoulder roll/yaw to prevent lateral hand drift.
+        lateral_lock = {
+            "left_shoulder_roll_joint":    0.60,
+            "right_shoulder_roll_joint":  -0.60,
+            "left_shoulder_yaw_joint":    -0.18,
+            "right_shoulder_yaw_joint":    0.18,
+        }
+        for jn, val in lateral_lock.items():
+            aid = self.joint_to_act.get(jn)
+            if aid is not None:
+                q_des[aid] = val
+
+        # Shoulder pitch stays free (phase-blended) but bounded to bench arc.
+        for jn in ("left_shoulder_pitch_joint", "right_shoulder_pitch_joint"):
+            aid = self.joint_to_act.get(jn)
+            if aid is not None:
+                q_des[aid] = np.clip(q_des[aid], -1.60, -0.40)
+
+        # Mirror right shoulder pitch from left.
+        l_sp = self.joint_to_act.get("left_shoulder_pitch_joint")
+        r_sp = self.joint_to_act.get("right_shoulder_pitch_joint")
+        if l_sp is not None and r_sp is not None:
+            q_des[r_sp] = q_des[l_sp]
+
+        # Wrists neutral.
+        for jn in (
+            "left_wrist_roll_joint", "right_wrist_roll_joint",
+            "left_wrist_pitch_joint", "right_wrist_pitch_joint",
+            "left_wrist_yaw_joint", "right_wrist_yaw_joint",
+        ):
+            aid = self.joint_to_act.get(jn)
+            if aid is not None:
+                q_des[aid] = 0.0
+
+        # Elbow safety clamp.
+        for jn in ("left_elbow_joint", "right_elbow_joint"):
+            aid = self.joint_to_act.get(jn)
+            if aid is not None:
+                q_des[aid] = np.clip(q_des[aid], 0.0, 1.65)
+
+        # Mirror right elbow directly from left.
+        l_id = self.joint_to_act.get("left_elbow_joint")
+        r_id = self.joint_to_act.get("right_elbow_joint")
+        if l_id is not None and r_id is not None:
+            q_des[r_id] = q_des[l_id]
+
+        # Grip always closed (setup/grasp phases are skipped).
+        grasp_alpha = 1.0
+
+        for jn, open_val in GRIP_OPEN.items():
+            aid = self.joint_to_act.get(jn)
+            if aid is None:
+                continue
+            close_val = GRIP_CLOSED.get(jn, open_val)
+            q_des[aid] = (1.0 - grasp_alpha) * open_val + grasp_alpha * close_val
+
+        self._advance_phase(dt)
+        return q_des
+
+
+def draw_barbell(viewer, data: mujoco.MjData, left_body: int, right_body: int):
+    """Spawn/update only the visual barbell between wrists."""
+    if left_body < 0 or right_body < 0:
+        return
+
+    # Use wrist-yaw frame + palm offset, not raw elbow-proximal point.
+    grip_offset_local = np.array([0.105, 0.0015, -0.008], dtype=np.float64)
+    left_rot = data.xmat[left_body].reshape(3, 3)
+    right_rot = data.xmat[right_body].reshape(3, 3)
+    left_p = data.xpos[left_body].copy() + left_rot @ grip_offset_local
+    right_p = data.xpos[right_body].copy() + right_rot @ grip_offset_local
+
+    # Rigid bar model: constant length, only pose (center + direction) changes.
+    center = 0.5 * (left_p + right_p)
+    lr = right_p - left_p
+    lr[2] = 0.0
+    lr_norm = np.linalg.norm(lr)
+    if lr_norm < 1e-6:
+        axis = np.array([0.0, 1.0, 0.0])
+    else:
+        axis = lr / lr_norm
+
+    half_len = 0.5 * BAR_TOTAL_LENGTH
+    left_end = center - axis * half_len
+    right_end = center + axis * half_len
+
+    # Keep bar approximately level while preserving rigid shape.
+    left_end[2] = center[2]
+    right_end[2] = center[2]
+
+    scn = viewer.user_scn
+    scn.ngeom = 0
+
+    # Bar shaft.
+    mujoco.mjv_initGeom(
+        scn.geoms[scn.ngeom],
+        mujoco.mjtGeom.mjGEOM_CAPSULE,
+        np.zeros(3),
+        np.zeros(3),
+        np.eye(3).flatten(),
+        np.array([0.8, 0.8, 0.82, 1.0]),
+    )
+    mujoco.mjv_connector(
+        scn.geoms[scn.ngeom],
+        mujoco.mjtGeom.mjGEOM_CAPSULE,
+        BAR_SHAFT_RADIUS,
+        np.array([left_end[0], left_end[1], left_end[2]], dtype=np.float64),
+        np.array([right_end[0], right_end[1], right_end[2]], dtype=np.float64),
+    )
+    scn.ngeom += 1
+
+    # Plates at the bar ends.
+    plate_offset = 0.015
+    for p in (left_end, right_end):
+        mujoco.mjv_initGeom(
+            scn.geoms[scn.ngeom],
+            mujoco.mjtGeom.mjGEOM_SPHERE,
+            np.array([BAR_PLATE_RADIUS, BAR_PLATE_RADIUS, BAR_PLATE_RADIUS]),
+            np.array([p[0], p[1], p[2] + plate_offset]),
+            np.eye(3).flatten(),
+            np.array([0.15, 0.15, 0.15, 1.0]),
+        )
+        scn.ngeom += 1
 
 
 def build_actuator_qpos_index(model: mujoco.MjModel) -> np.ndarray:
@@ -348,13 +650,17 @@ def main():
         gains.append(GAINS["hand"])
 
     # ------------------------------------------------------------------
-    # Initialise qpos to the desired standing pose so the robot starts
-    # balanced rather than collapsing from the default all-zeros state.
+    # Initialise qpos to a lying bench-press start pose on the static bench.
     # ------------------------------------------------------------------
     data.qpos[qpos_idx] = q_des          # set joint angles
-    data.qpos[2] = 0.78                  # z height: ~0.78 m clears the floor
-    data.qpos[3] = 1.0                   # quaternion w=1 → upright orientation
-    data.qpos[4:7] = 0.0                 # quaternion x,y,z = 0
+    data.qpos[0] = -0.15                 # align torso centered over bench
+    data.qpos[1] = 0.0
+    data.qpos[2] = 0.74                  # back resting on bench surface
+    # Rotate base to lie on back (supine): ~-90 deg about y-axis.
+    data.qpos[3] = 0.70710678            # quaternion w
+    data.qpos[4] = 0.0                   # quaternion x
+    data.qpos[5] = -0.70710678           # quaternion y
+    data.qpos[6] = 0.0                   # quaternion z
     mujoco.mj_forward(model, data)       # propagate kinematics
 
     # Quick physics sanity check (10 steps, no viewer)
@@ -379,11 +685,12 @@ def main():
     viewer.cam.azimuth   = CAM_AZIMUTH
     viewer.cam.lookat[:] = CAM_LOOKAT
 
-    # Pre-build the two pose arrays for the squat cycle
-    q_stand = build_desired_pose(model, STAND_POSE)
-    q_squat = build_desired_pose(model, SQUAT_POSE)
+    # Bench press phase controller
+    bench = BenchPressController(model)
+    last_phase = None
 
-    print("\nSimulation running — robot will squat and stand on repeat.")
+    print("\nSimulation running — robot starts supine on the static bench.")
+    print("Only the barbell is rendered dynamically; bench/rack come from scene XML.")
     print("Close the viewer window to stop.\n")
 
     # ------------------------------------------------------------------
@@ -397,8 +704,8 @@ def main():
         # PD torques are recomputed every physics step (not once per frame)
         # so the controller always sees fresh joint state — prevents shaking.
         for _ in range(STEPS_PER_FRAME):
-            # Squat cycle: smoothly blend stand ↔ squat based on sim time
-            q_des = squat_cycle(data.time, q_stand, q_squat)
+            # Bench press state machine target with live feedback corrections.
+            q_des = bench.target(model, data, model.opt.timestep)
 
             # PD: read current state and compute torques toward q_des
             q  = data.qpos[qpos_idx]
@@ -410,6 +717,23 @@ def main():
                                model.actuator_ctrlrange[:, 1])
             data.ctrl[:] = tau
             mujoco.mj_step(model, data)
+
+            # Pin floating base to bench pose to prevent torso lift-off.
+            data.qpos[0] = -0.15
+            data.qpos[1] = 0.0
+            data.qpos[2] = 0.74
+            data.qpos[3] = 0.70710678
+            data.qpos[4] = 0.0
+            data.qpos[5] = -0.70710678
+            data.qpos[6] = 0.0
+            data.qvel[0:6] = 0.0
+
+        if bench.phase != last_phase:
+            print(f"Phase: {bench.phase.value}")
+            last_phase = bench.phase
+
+        # Spawn/update visual barbell.
+        draw_barbell(viewer, data, bench.left_wrist_body, bench.right_wrist_body)
 
         # Sync viewer at ~50 fps
         elapsed = time.perf_counter() - step_start
