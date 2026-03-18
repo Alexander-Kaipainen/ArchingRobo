@@ -190,10 +190,10 @@ BENCH_LOCKOUT_POSE = {
     "right_knee_joint":         0.48,
     "right_ankle_pitch_joint": -0.12,
     "waist_pitch_joint":       -0.10,
-    "left_shoulder_pitch_joint":  -1.50,
-    "right_shoulder_pitch_joint": -1.50,
-    "left_shoulder_roll_joint":    0.60,
-    "right_shoulder_roll_joint":  -0.60,
+    "left_shoulder_pitch_joint":  -1.72,
+    "right_shoulder_pitch_joint": -1.72,
+    "left_shoulder_roll_joint":    0.55,
+    "right_shoulder_roll_joint":  -0.55,
     "left_shoulder_yaw_joint":    -0.18,
     "right_shoulder_yaw_joint":    0.18,
     "left_elbow_joint":            0.05,
@@ -215,14 +215,14 @@ BENCH_BOTTOM_POSE = {
     "right_knee_joint":         0.48,
     "right_ankle_pitch_joint": -0.12,
     "waist_pitch_joint":       -0.10,
-    "left_shoulder_pitch_joint":  -0.45,
-    "right_shoulder_pitch_joint": -0.45,
-    "left_shoulder_roll_joint":    0.60,
-    "right_shoulder_roll_joint":  -0.60,
+    "left_shoulder_pitch_joint":  -1.72,
+    "right_shoulder_pitch_joint": -1.72,
+    "left_shoulder_roll_joint":    0.55,
+    "right_shoulder_roll_joint":  -0.55,
     "left_shoulder_yaw_joint":    -0.18,
     "right_shoulder_yaw_joint":    0.18,
-    "left_elbow_joint":            1.65,
-    "right_elbow_joint":           1.65,
+    "left_elbow_joint":            1.50,
+    "right_elbow_joint":           1.50,
     "left_wrist_roll_joint":       0.0,
     "right_wrist_roll_joint":      0.0,
     "left_wrist_pitch_joint":      0.0,
@@ -249,10 +249,13 @@ BOTTOM_PAUSE_TIME = 0.8
 ASCENT_TIME = 1.5
 LOCKOUT_HOLD_TIME = 2.5
 
-# Visual barbell dimensions (rigid, constant length).
-BAR_TOTAL_LENGTH = 0.90
-BAR_SHAFT_RADIUS = 0.017
-BAR_PLATE_RADIUS = 0.06
+# Barbell visual dimensions - loaded with 20 kg plates.
+BAR_TOTAL_LENGTH = 1.20
+BAR_SHAFT_RADIUS = 0.015
+BAR_PLATE_RADIUS = 0.12
+BAR_PLATE_THICKNESS = 0.028
+COLLAR_RADIUS = 0.030
+COLLAR_THICKNESS = 0.018
 HAND_SPREAD_BIAS = 0.10
 
 GRIP_OPEN = {
@@ -405,29 +408,42 @@ class BenchPressController:
             if aid is not None:
                 q_des[aid] = self.setup[aid]
 
-        # Lock only shoulder roll/yaw to prevent lateral hand drift.
-        lateral_lock = {
-            "left_shoulder_roll_joint":    0.60,
-            "right_shoulder_roll_joint":  -0.60,
-            "left_shoulder_yaw_joint":    -0.18,
-            "right_shoulder_yaw_joint":    0.18,
+        # Shoulder pitch follows a short, chest-centric arc.
+        for jn in ("left_shoulder_pitch_joint", "right_shoulder_pitch_joint"):
+            aid = self.joint_to_act.get(jn)
+            if aid is not None:
+                q_des[aid] = np.clip(q_des[aid], -1.80, -1.60)
+
+        # Shoulder roll opens/closes through the rep to lower/raise the bar.
+        for jn, lo, hi in (
+            ("left_shoulder_roll_joint", 0.50, 1.00),
+            ("right_shoulder_roll_joint", -1.00, -0.50),
+        ):
+            aid = self.joint_to_act.get(jn)
+            if aid is not None:
+                q_des[aid] = np.clip(q_des[aid], lo, hi)
+
+        # Keep shoulder yaw fixed to avoid forearm twist and drift.
+        yaw_lock = {
+            "left_shoulder_yaw_joint": -0.18,
+            "right_shoulder_yaw_joint": 0.18,
         }
-        for jn, val in lateral_lock.items():
+        for jn, val in yaw_lock.items():
             aid = self.joint_to_act.get(jn)
             if aid is not None:
                 q_des[aid] = val
 
-        # Shoulder pitch stays free (phase-blended) but bounded to bench arc.
-        for jn in ("left_shoulder_pitch_joint", "right_shoulder_pitch_joint"):
-            aid = self.joint_to_act.get(jn)
-            if aid is not None:
-                q_des[aid] = np.clip(q_des[aid], -1.60, -0.40)
-
-        # Mirror right shoulder pitch from left.
-        l_sp = self.joint_to_act.get("left_shoulder_pitch_joint")
-        r_sp = self.joint_to_act.get("right_shoulder_pitch_joint")
-        if l_sp is not None and r_sp is not None:
-            q_des[r_sp] = q_des[l_sp]
+        # Mirror right side from left for bilateral symmetry.
+        mirror_pairs = (
+            ("left_shoulder_pitch_joint", "right_shoulder_pitch_joint", 1.0),
+            ("left_shoulder_roll_joint", "right_shoulder_roll_joint", -1.0),
+            ("left_elbow_joint", "right_elbow_joint", 1.0),
+        )
+        for l_name, r_name, sign in mirror_pairs:
+            l_id = self.joint_to_act.get(l_name)
+            r_id = self.joint_to_act.get(r_name)
+            if l_id is not None and r_id is not None:
+                q_des[r_id] = sign * q_des[l_id]
 
         # Wrists neutral.
         for jn in (
@@ -443,91 +459,105 @@ class BenchPressController:
         for jn in ("left_elbow_joint", "right_elbow_joint"):
             aid = self.joint_to_act.get(jn)
             if aid is not None:
-                q_des[aid] = np.clip(q_des[aid], 0.0, 1.65)
+                q_des[aid] = np.clip(q_des[aid], 0.0, 1.70)
 
-        # Mirror right elbow directly from left.
+        # Re-enforce mirrored elbow after clamping.
         l_id = self.joint_to_act.get("left_elbow_joint")
         r_id = self.joint_to_act.get("right_elbow_joint")
         if l_id is not None and r_id is not None:
             q_des[r_id] = q_des[l_id]
 
         # Grip always closed (setup/grasp phases are skipped).
-        grasp_alpha = 1.0
 
         for jn, open_val in GRIP_OPEN.items():
             aid = self.joint_to_act.get(jn)
             if aid is None:
                 continue
-            close_val = GRIP_CLOSED.get(jn, open_val)
-            q_des[aid] = (1.0 - grasp_alpha) * open_val + grasp_alpha * close_val
+            q_des[aid] = GRIP_CLOSED.get(jn, open_val)
 
         self._advance_phase(dt)
         return q_des
 
 
 def draw_barbell(viewer, data: mujoco.MjData, left_body: int, right_body: int):
-    """Spawn/update only the visual barbell between wrists."""
     if left_body < 0 or right_body < 0:
         return
 
-    # Use wrist-yaw frame + palm offset, not raw elbow-proximal point.
     grip_offset_local = np.array([0.105, 0.0015, -0.008], dtype=np.float64)
     left_rot = data.xmat[left_body].reshape(3, 3)
     right_rot = data.xmat[right_body].reshape(3, 3)
     left_p = data.xpos[left_body].copy() + left_rot @ grip_offset_local
     right_p = data.xpos[right_body].copy() + right_rot @ grip_offset_local
 
-    # Rigid bar model: constant length, only pose (center + direction) changes.
     center = 0.5 * (left_p + right_p)
     lr = right_p - left_p
     lr[2] = 0.0
     lr_norm = np.linalg.norm(lr)
-    if lr_norm < 1e-6:
-        axis = np.array([0.0, 1.0, 0.0])
-    else:
-        axis = lr / lr_norm
+    axis = lr / lr_norm if lr_norm > 1e-6 else np.array([0.0, 1.0, 0.0])
 
     half_len = 0.5 * BAR_TOTAL_LENGTH
     left_end = center - axis * half_len
     right_end = center + axis * half_len
-
-    # Keep bar approximately level while preserving rigid shape.
     left_end[2] = center[2]
     right_end[2] = center[2]
 
     scn = viewer.user_scn
     scn.ngeom = 0
 
-    # Bar shaft.
+    def add_geom() -> int:
+        idx = scn.ngeom
+        scn.ngeom += 1
+        return idx
+
+    # Bar shaft (silver).
+    g = add_geom()
     mujoco.mjv_initGeom(
-        scn.geoms[scn.ngeom],
+        scn.geoms[g],
         mujoco.mjtGeom.mjGEOM_CAPSULE,
         np.zeros(3),
         np.zeros(3),
         np.eye(3).flatten(),
-        np.array([0.8, 0.8, 0.82, 1.0]),
+        np.array([0.82, 0.82, 0.85, 1.0]),
     )
     mujoco.mjv_connector(
-        scn.geoms[scn.ngeom],
+        scn.geoms[g],
         mujoco.mjtGeom.mjGEOM_CAPSULE,
         BAR_SHAFT_RADIUS,
-        np.array([left_end[0], left_end[1], left_end[2]], dtype=np.float64),
-        np.array([right_end[0], right_end[1], right_end[2]], dtype=np.float64),
+        left_end.astype(np.float64),
+        right_end.astype(np.float64),
     )
-    scn.ngeom += 1
 
-    # Plates at the bar ends.
-    plate_offset = 0.015
-    for p in (left_end, right_end):
+    def draw_plate(center_pos: np.ndarray, radius: float, thickness: float, color: list):
+        p0 = center_pos - axis * (thickness * 0.5)
+        p1 = center_pos + axis * (thickness * 0.5)
+        g = add_geom()
         mujoco.mjv_initGeom(
-            scn.geoms[scn.ngeom],
-            mujoco.mjtGeom.mjGEOM_SPHERE,
-            np.array([BAR_PLATE_RADIUS, BAR_PLATE_RADIUS, BAR_PLATE_RADIUS]),
-            np.array([p[0], p[1], p[2] + plate_offset]),
+            scn.geoms[g],
+            mujoco.mjtGeom.mjGEOM_CAPSULE,
+            np.zeros(3),
+            np.zeros(3),
             np.eye(3).flatten(),
-            np.array([0.15, 0.15, 0.15, 1.0]),
+            np.array([*color, 1.0]),
         )
-        scn.ngeom += 1
+        mujoco.mjv_connector(
+            scn.geoms[g],
+            mujoco.mjtGeom.mjGEOM_CAPSULE,
+            radius,
+            p0.astype(np.float64),
+            p1.astype(np.float64),
+        )
+
+    # 20 kg plates.
+    plate_inset = 0.05
+    for end, direction in ((left_end, +1), (right_end, -1)):
+        plate_center = end + axis * direction * plate_inset
+        draw_plate(plate_center, BAR_PLATE_RADIUS, BAR_PLATE_THICKNESS, [0.18, 0.18, 0.18])
+
+    # Collars.
+    collar_inset = plate_inset + BAR_PLATE_THICKNESS + 0.012
+    for end, direction in ((left_end, +1), (right_end, -1)):
+        collar_center = end + axis * direction * collar_inset
+        draw_plate(collar_center, COLLAR_RADIUS, COLLAR_THICKNESS, [0.75, 0.75, 0.78])
 
 
 def build_actuator_qpos_index(model: mujoco.MjModel) -> np.ndarray:
