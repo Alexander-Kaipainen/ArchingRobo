@@ -22,7 +22,7 @@ Vet inte vad vi kör på än
 
 ### Spår B: ML (Machine Learning)
 
-## 5. 8-veckors plan
+## 4. 8-veckors plan
 
 ### Vecka 1: Miljö och baseline
 
@@ -40,7 +40,7 @@ Vet inte vad vi kör på än
 
 ### Vecka 8: Slutdemo och rapport
 
-## 7. Mätvärden (måste följas varje vecka)
+## 5. Mätvärden (måste följas varje vecka)
 
 - Count accuracy (% korrekta reps).
 - False positives (extra reps).
