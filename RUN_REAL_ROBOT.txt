@@ -1,0 +1,57 @@
+# Unitree G1 Bicep Curl - Quickstart Guide
+
+This repository contains scripts for both MuJoCo simulation and real robot control.
+
+================================================================================
+SECTION 1: SIMULATION (Verification)
+================================================================================
+Use this to test your logic safely before running on the real robot.
+
+1. START THE SIMULATOR (Terminal A):
+   python3.12 ark_unitree_g1/tests/g1_mujoco_sim/unitree_mujoco.py
+   
+2. RUN THE CONTROLLER (Terminal B):
+   python3.12 real_bicep_curl.py --sim
+
+================================================================================
+SECTION 2: REAL ROBOT
+================================================================================
+Use this ONLY after verifying logic in simulation.
+
+1. FIX NETWORKING (Run once per session):
+   nmcli device modify enp129s0 ipv4.addresses 192.168.123.123/24
+
+2. RUN THE CONTROLLER:
+   python3.12 real_bicep_curl.py
+
+3. STOP ROBOT:
+   Press Ctrl+C in the terminal. The script will return arms home safely.
+
+================================================================================
+FILE REFERENCE
+================================================================================
+- real_bicep_curl.py              : The main logic (Target: Real or Sim).
+- ark_unitree_g1/.../unitree_mujoco.py : The MuJoCo window (Simulator).
+- ark_unitree_g1/.../config.py     : Simulation settings (Gains, Interface, Elastic Band).
+
+================================================================================
+SAFETY REMINDERS
+================================================================================
+- For Real Robot: Must be in Low-level Control Mode (Debug Mode).
+- For Real Robot: Use a stand or ensure a clear, safe area.
+- ALWAYS test new logic in SIMULATION first using the --sim flag.
+
+================================================================================
+HOW TO CUSTOMIZE THE MOTION
+================================================================================
+Open 'real_bicep_curl.py' and look for these variables:
+
+- CURL_PERIOD    : Time in seconds for 1 full curl. Smaller = Faster.
+- ELBOW_EXTENDED : The arm position at the BOTTOM (Limit: -1.0).
+- ELBOW_FLEXED   : The arm position at the TOP (Limit: 2.0).
+
+NOTE ON COLLISION AVOIDANCE: 
+The script now includes a 'prep_q' pose that pitches the shoulders forward 
+and outward. If the arms are still too close to the legs, increase the 
+negative value of `prep_q[0]` (Left Shoulder Pitch) and `prep_q[7]` 
+(Right Shoulder Pitch) in the script.
