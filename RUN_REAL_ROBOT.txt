@@ -14,12 +14,64 @@ Use this to test your logic safely before running on the real robot.
    python3.12 real_bicep_curl.py --sim
 
 ================================================================================
+SECTION 1B: LOCAL VOICE QUICK START
+================================================================================
+Use this to run the fully local voice assistant on the Linux PC.
+
+0. INSTALL VOICE DEPENDENCIES:
+   pip install openai-whisper sounddevice scipy numpy pyttsx3
+   sudo apt install espeak-ng -y
+
+1. LIST MICROPHONES (optional, if the default device is wrong):
+   python3.12 brunken_voice.py --list-audio-devices
+
+   NOTE: If PortAudio is not available on this machine, the script automatically
+   falls back to ALSA `arecord` for microphone capture and listing.
+
+2. RUN THE VOICE ASSISTANT:
+   python3.12 brunken_voice.py --interface enp129s0 --domain 0
+
+   For stronger Swedish recognition across accents:
+   python3.12 brunken_voice.py --interface enp129s0 --domain 0 --language sv
+
+3. IF YOUR MICROPHONE IS NOT THE DEFAULT DEVICE:
+   python3.12 brunken_voice.py --interface enp129s0 --domain 0 --input-device "your mic name"
+
+4. IF YOU STILL SEE "<silence>" ON ALSA FALLBACK:
+   python3.12 brunken_voice.py --interface enp129s0 --domain 0 --language sv --arecord-device default --mic-debug --switch-seconds 20
+
+   To save each wake chunk and verify the real mic source by ear:
+   python3.12 brunken_voice.py --interface enp129s0 --domain 0 --language sv --arecord-device default --mic-debug --mic-debug-save --switch-seconds 20
+
+   Then inspect recordings:
+   ls -1t /tmp/brunken_wake_*.wav | head
+   aplay "<one file from above>"
+
+   If one source sounds correct, lock it explicitly for normal runs:
+   python3.12 brunken_voice.py --interface enp129s0 --domain 0 --language sv --arecord-device "pulse"
+
+5. NEW STICK/BARBELL HAND COMMANDS:
+    - Say: "brunken oppna" (or "brunken öppna")
+       -> Robot moves arms to a palms-up loading pose and opens both hands.
+    - Say: "brunken stang" (or "brunken stäng")
+       -> Robot closes both hands to grip the stick/barbell.
+
+================================================================================
 SECTION 2: REAL ROBOT
 ================================================================================
 Use this ONLY after verifying logic in simulation.
 
 1. FIX NETWORKING (Run once per session):
-   nmcli device modify enp129s0 ipv4.addresses 192.168.123.123/24
+   # Robot cable must be connected and robot Ethernet must be powered.
+   # Create/update a dedicated static profile for the robot NIC.
+   nmcli connection add type ethernet ifname enp129s0 con-name g1-static ipv4.method manual ipv4.addresses 192.168.123.123/24 ipv4.never-default yes autoconnect yes 2>/dev/null || true
+   nmcli connection modify g1-static ipv4.method manual ipv4.addresses 192.168.123.123/24 ipv4.never-default yes autoconnect yes
+   nmcli connection up g1-static
+
+   If this fails with "NO-CARRIER" or "Device is not activated", check:
+   - Ethernet link LEDs are on at both ends
+   - Robot is powered and Ethernet service is up
+   - Correct NIC is used (verify with: ip -br link)
 
 2. RUN THE CONTROLLER:
    python3.12 real_bicep_curl.py

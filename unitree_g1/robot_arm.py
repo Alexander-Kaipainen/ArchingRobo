@@ -75,7 +75,15 @@ class G1_29_ArmController:
         self.subscribe_thread.daemon = True
         self.subscribe_thread.start()
 
+        wait_start = time.time()
+        wait_timeout_s = 20.0
         while not self.lowstate_buffer.GetData():
+            if (time.time() - wait_start) > wait_timeout_s:
+                self._running = False
+                raise TimeoutError(
+                    "[G1_29_ArmController] Timed out waiting for rt/lowstate after 20s. "
+                    "Check robot Debug Mode, NIC/link state, DDS domain/interface, and ensure no conflicting control client is running."
+                )
             time.sleep(0.01)
             print("[G1_29_ArmController] Waiting to subscribe dds...")
 
