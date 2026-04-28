@@ -47,6 +47,14 @@ def load_sounddevice():
 def load_unitree_modules() -> dict[str, Any]:
     try:
         from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelPublisher, ChannelSubscriber
+        import unitree_sdk2py.core.channel as dds_channel
+        import os
+
+        trace_config = getattr(dds_channel, "ChannelConfigHasInterface", "")
+        if "/tmp/cdds.LOG" in trace_config:
+            trace_path = f"/tmp/cdds.{os.getpid()}.LOG"
+            dds_channel.ChannelConfigHasInterface = trace_config.replace("/tmp/cdds.LOG", trace_path)
+
         from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
         from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
         from unitree_sdk2py.idl.default import unitree_hg_msg_dds__HandCmd_
@@ -121,7 +129,7 @@ def resample_to_whisper_rate(samples: np.ndarray, capture_rate: float, whisper_r
 
 
 RIGHT_ARM_INDICES = [22, 23, 24, 25, 26, 27, 28]
-NUM_MOTORS = 35
+NUM_MOTORS = 29  # 29 body motors, ignoring the 14 hand motors
 
 
 def normalize_text(text: str) -> str:
@@ -179,7 +187,7 @@ def looks_like_repeated_hallucination(text: str) -> bool:
     return False
 
 
-def contains_wake_word(text: str, wake_word: str = "brunken") -> bool:
+def contains_wake_word(text: str, wake_word: str = "cheese") -> bool:
     cleaned = normalize_text(text)
     if not cleaned:
         return False
@@ -193,17 +201,22 @@ def contains_wake_word(text: str, wake_word: str = "brunken") -> bool:
     return False
 
 
+_tts_engine = None
+
 def say(text: str) -> None:
+    global _tts_engine
     try:
         import pyttsx3
     except ModuleNotFoundError as error:
         raise RuntimeError("pyttsx3 is required for TTS; install it with `pip install pyttsx3`") from error
 
-    engine = pyttsx3.init()
-    engine.setProperty("rate", 180)
-    engine.setProperty("volume", 1.0)
-    engine.say(text)
-    engine.runAndWait()
+    if _tts_engine is None:
+        _tts_engine = pyttsx3.init()
+        _tts_engine.setProperty("rate", 180)
+        _tts_engine.setProperty("volume", 1.0)
+        
+    _tts_engine.say(text)
+    _tts_engine.runAndWait()
 
 
 @dataclass
@@ -297,24 +310,38 @@ class LowLevelSaluteController:
         self.latest_state_time = 0.0
         self._state_ready = threading.Event()
 
+        self.crc = sdk["CRC"]()
+        self.msg = sdk["LowCmdFactory"]()
+        self.msg.mode_pr = 0
+
         self.lowstate_subscriber = self.ChannelSubscriber("rt/lowstate", self.LowState)
         self.lowstate_subscriber.Init(self._on_lowstate, 10)
 
         self.lowcmd_publisher = self.ChannelPublisher("rt/lowcmd", sdk["LowCmdMsgType"])
         self.lowcmd_publisher.Init()
+        
+        self._animation_thread = None
+        self._animation_stop_event = threading.Event()
+        self._running = True
+        self._target_q = np.zeros(NUM_MOTORS, dtype=float)
+        
+        self.wait_for_state(timeout=2.0)
+        with self.state_lock:
+            self._target_q[:] = self.current_q[:]
+            self._prime_message()
 
-        self.crc = sdk["CRC"]()
-        self.msg = sdk["LowCmdFactory"]()
-        self.msg.mode_pr = 0
-
-        self._prime_message()
+        self.publish_thread = threading.Thread(target=self._publish_loop, daemon=True)
+        self.publish_thread.start()
 
     def _on_lowstate(self, msg) -> None:
         with self.state_lock:
+            if not self._state_ready.is_set():
+                print(f"[salute_controller] First lowstate received! Body motors: {len(msg.motor_state)}")
             limit = min(NUM_MOTORS, len(msg.motor_state))
             for idx in range(limit):
                 self.current_q[idx] = msg.motor_state[idx].q
                 self.current_dq[idx] = msg.motor_state[idx].dq
+            self.msg.mode_machine = msg.mode_machine
             self.latest_state_time = time.time()
             self._state_ready.set()
 
@@ -322,37 +349,39 @@ class LowLevelSaluteController:
         return self._state_ready.wait(timeout=timeout)
 
     def _prime_message(self) -> None:
-        with self.state_lock:
-            q = self.current_q.copy()
         for idx in range(NUM_MOTORS):
             self.msg.motor_cmd[idx].mode = 0x01
             self.msg.motor_cmd[idx].kp = 20.0
             self.msg.motor_cmd[idx].kd = 3.0
-            self.msg.motor_cmd[idx].q = float(q[idx])
+            self.msg.motor_cmd[idx].q = float(self._target_q[idx])
             self.msg.motor_cmd[idx].dq = 0.0
             self.msg.motor_cmd[idx].tau = 0.0
-        self.msg.crc = self.crc.Crc(self.msg)
-        self.lowcmd_publisher.Write(self.msg)
+
+    def _publish_loop(self) -> None:
+        while self._running:
+            with self.state_lock:
+                q_cmd = self._target_q.copy()
+            self._write_full_body_command(q_cmd)
+            time.sleep(0.004)
 
     def _publish_target(self, target_q: np.ndarray, duration: float, hold: bool = False) -> None:
         duration = max(0.0, duration)
         steps = max(1, int(duration * 250))
 
         with self.state_lock:
-            start_q = self.current_q.copy()
+            start_q = self._target_q.copy()
 
         for step in range(steps):
             alpha = (step + 1) / steps
-            q_cmd = (1.0 - alpha) * start_q + alpha * target_q
-            self._write_full_body_command(q_cmd)
+            with self.state_lock:
+                self._target_q[:] = (1.0 - alpha) * start_q + alpha * target_q
             time.sleep(0.004)
 
         if hold:
-            self._write_full_body_command(target_q)
+            with self.state_lock:
+                self._target_q[:] = target_q
 
     def _write_full_body_command(self, q_cmd: np.ndarray) -> None:
-        with self.state_lock:
-            self.current_q[:] = q_cmd
         for idx in range(NUM_MOTORS):
             self.msg.motor_cmd[idx].mode = 0x01
             self.msg.motor_cmd[idx].q = float(q_cmd[idx])
@@ -382,28 +411,90 @@ class LowLevelSaluteController:
             return
 
         with self.state_lock:
+            self._target_q[:] = self.current_q[:]
             rest_q = self.current_q.copy()
 
         salute_q = rest_q.copy()
-        salute_q[22] = rest_q[22] - 0.90
-        salute_q[23] = rest_q[23] - 0.25
-        salute_q[24] = rest_q[24] + 0.15
-        salute_q[25] = rest_q[25] + 1.10
-        salute_q[26] = rest_q[26] + 0.05
-        salute_q[27] = rest_q[27] - 0.20
-        salute_q[28] = rest_q[28]
+        # Proper Right Arm Salute (Military Style)
+        # Ultra-conservative clearance: -1.0 elbow and 0.0 yaw.
+        salute_q[22] = -1.00  # Shoulder Pitch
+        salute_q[23] = -1.50  # Shoulder Roll: Move arm wide
+        salute_q[24] = 0.00   # Shoulder Yaw: No inward rotation
+        salute_q[25] = -0.45  # ELBOW: Conservative 90-degree bend
+        salute_q[26] = 0.00
+        salute_q[27] = -0.40  # Wrist Pitch
+        salute_q[28] = 0.00
 
-        print("[state] executing salute")
+        print("[state] executing salute (ultra-wide clearance)")
         try:
-            self._publish_target(salute_q, duration=1.0, hold=True)
+            self._publish_target(salute_q, duration=0.8, hold=True)
             time.sleep(1.5)
         finally:
-            self._publish_target(rest_q, duration=1.0, hold=True)
+            self._publish_target(rest_q, duration=1.2, hold=True)
 
     def shutdown(self) -> None:
+        self.stop_animations()
+        self._running = False
+        if hasattr(self, 'publish_thread'):
+            self.publish_thread.join(timeout=0.1)
+
+    def start_bicep_curl(self) -> None:
+        """Start a continuous bicep curl animation in a background thread."""
+        self.stop_animations()
+        self._animation_stop_event.clear()
+        self._animation_thread = threading.Thread(target=self._bicep_curl_loop, daemon=True)
+        self._animation_thread.start()
+
+    def stop_animations(self) -> None:
+        """Stop any active background animations (like bicep curls)."""
+        self._animation_stop_event.set()
+        if self._animation_thread is not None:
+            self._animation_thread.join(timeout=0.1)
+            self._animation_thread = None
+
+    def _bicep_curl_loop(self) -> None:
+        if not self.wait_for_state(timeout=3.0):
+            return
+
         with self.state_lock:
+            self._target_q[:] = self.current_q[:]
             rest_q = self.current_q.copy()
-        self._write_full_body_command(rest_q)
+
+        # 1. Move to Prep Posture (Shoulders forward and out + Elbows at 'Bottom')
+        prep_q = rest_q.copy()
+        prep_q[15] = -0.4  # Left Shoulder Pitch Forward
+        prep_q[16] = 0.5   # Left Shoulder Roll Out
+        prep_q[22] = -0.4  # Right Shoulder Pitch Forward
+        prep_q[23] = -0.5  # Right Shoulder Roll Out
+        prep_q[18] = 0.0   # Left Elbow Extended
+        prep_q[25] = 0.0   # Right Elbow Extended
+        
+        self._publish_target(prep_q, duration=2.5, hold=True)
+        time.sleep(0.5)
+
+        # 2. Continuous Curl Loop
+        CURL_PERIOD = 5.0
+        ELBOW_EXTENDED = 0.0
+        ELBOW_FLEXED = 1.4
+        
+        start_time = time.time()
+        while not self._animation_stop_event.is_set():
+            elapsed = time.time() - start_time
+            omega = (2.0 * np.pi) / CURL_PERIOD
+            phase = omega * elapsed
+            
+            # Sine wave between extended and flexed
+            amp = (ELBOW_FLEXED - ELBOW_EXTENDED) / 2.0
+            mid = (ELBOW_FLEXED + ELBOW_EXTENDED) / 2.0
+            val = mid - amp * np.cos(phase)
+            
+            with self.state_lock:
+                self._target_q[18] = val  # Left Elbow
+                self._target_q[25] = val  # Right Elbow
+            time.sleep(0.01)
+
+        # 3. Return to rest
+        self._publish_target(rest_q, duration=1.2, hold=True)
 
     def move_to_dual_arm_pose(self, q14_target: np.ndarray, duration: float = 1.2, hold: bool = True) -> None:
         if not self.wait_for_state(timeout=2.0):
@@ -464,10 +555,10 @@ class DexHandController:
             self.left_msg.motor_cmd[i].tau = 0.0
             self.right_msg.motor_cmd[i].tau = 0.0
 
-            self.left_msg.motor_cmd[i].kp = 1.8
-            self.right_msg.motor_cmd[i].kp = 1.8
-            self.left_msg.motor_cmd[i].kd = 0.25
-            self.right_msg.motor_cmd[i].kd = 0.25
+            self.left_msg.motor_cmd[i].kp = 30.0
+            self.right_msg.motor_cmd[i].kp = 30.0
+            self.left_msg.motor_cmd[i].kd = 1.5
+            self.right_msg.motor_cmd[i].kd = 1.5
 
     def set_hands(self, left_q: np.ndarray, right_q: np.ndarray, repeat: int = 8, dt: float = 0.03) -> None:
         for i in range(7):
@@ -480,13 +571,16 @@ class DexHandController:
             time.sleep(dt)
 
     def open_hands(self) -> None:
-        q_open = np.zeros(7, dtype=float)
+        # For these grippers, 0.0 is often 'neutral' or 'mid-way'. 
+        # Negative values usually open them further in MuJoCo.
+        q_open = np.array([-0.1, -0.1, -0.1, -0.1, -0.1, -0.1, -0.1], dtype=float)
         self.set_hands(q_open, q_open)
 
     def close_hands_for_bar(self) -> None:
-        # Thumb, index, middle curls tuned for a barbell-style grip posture.
-        q_close_left = np.array([1.00, 1.05, 0.95, 1.20, 1.10, 1.20, 1.10], dtype=float)
-        q_close_right = np.array([1.00, 1.05, 0.95, 1.20, 1.10, 1.20, 1.10], dtype=float)
+        # Increase these values if they aren't closing enough.
+        # Positive values (flexion) should close the fingers.
+        q_close_left = np.array([1.3, 1.3, 1.3, 1.3, 1.3, 1.3, 1.3], dtype=float)
+        q_close_right = np.array([1.3, 1.3, 1.3, 1.3, 1.3, 1.3, 1.3], dtype=float)
         self.set_hands(q_close_left, q_close_right)
 
 
@@ -495,18 +589,19 @@ class VoiceCommandSystem:
         self,
         interface: str,
         domain_id: int,
+        wake_word: str = "cheese",
         wake_model_name: str = "tiny",
         command_model_name: str = "base",
-        input_device: Optional[str] = None,
+        input_device: str = "auto",
         arecord_device: str = "auto",
-        language: str = "auto",
+        language: str = "en",
         mic_debug: bool = False,
         mic_debug_save: bool = False,
         switch_seconds: float = 20.0,
         audio_only: bool = False,
     ):
         self.audio = AudioConfig()
-        self.wake_word = "brunken"
+        self.wake_word = wake_word
         self.running = True
         self.console_lock = threading.Lock()
         self.language = language.lower().strip() if language else "auto"
@@ -647,7 +742,7 @@ class VoiceCommandSystem:
         stamp_ms = int(time.time() * 1000)
         snippet = normalize_text(transcript)[:24] or "silence"
         safe_snippet = re.sub(r"[^a-zA-Z0-9_.-]", "_", snippet)
-        wav_path = self._mic_debug_dir / f"brunken_wake_{stamp_ms}_{safe_source}_{safe_snippet}.wav"
+        wav_path = self._mic_debug_dir / f"cheese_wake_{stamp_ms}_{safe_source}_{safe_snippet}.wav"
         pcm = np.clip(chunk, -1.0, 1.0)
         pcm16 = (pcm * 32767.0).astype(np.int16, copy=False)
         with wave.open(str(wav_path), "wb") as wav_file:
@@ -671,7 +766,7 @@ class VoiceCommandSystem:
                 samples = samples.astype(np.float32, copy=False)
             return samples
 
-        wav_path = "/tmp/brunken_capture.wav"
+        wav_path = "/tmp/cheese_capture.wav"
         last_error = None
         attempts = [
             (self.audio.arecord_device, int(self.audio.capture_rate), 1),
@@ -787,21 +882,24 @@ class VoiceCommandSystem:
             self.log(f"[wake] {text or '<silence>'}")
 
             if not contains_wake_word(text, self.wake_word):
+                # Safety check: if they just shout 'stop' without the wake word, still handle it!
+                if any(fuzzy_contains_phrase(text, p) for p in ("stop", "halt", "freeze")):
+                    self.log("[state] emergency stop detected (no wake word)")
+                    self.handle_command("stop")
                 continue
 
             self.log("[state] wake detected")
-            tts_thread = threading.Thread(target=say, args=("Yes sir",), daemon=True)
-            salute_target = self.salute_controller.salute if self.salute_controller is not None else (lambda: None)
-            salute_thread = threading.Thread(target=salute_target, daemon=True)
-            tts_thread.start()
-            salute_thread.start()
-            tts_thread.join()
-            salute_thread.join()
+            
+            # Start confirmation voice and motion in the background
+            threading.Thread(target=say, args=("Yes sir",), daemon=True).start()
+            if self.salute_controller is not None:
+                threading.Thread(target=self.salute_controller.salute, daemon=True).start()
 
-            self.log("[state] command heard")
+            # IMMEDIATELY start listening for the command
+            self.log("[state] listening for command...")
             command_audio = self.record_audio(self.audio.command_seconds)
             command_text = self.transcribe(self.command_model, command_audio)
-            self.log(f"[cmd] {command_text or '<silence>'}")
+            self.log(f"[state] recognized command: \"{command_text or '<silence>'}\"")
 
             self.handle_command(command_text)
             self.log("[state] waiting")
@@ -843,6 +941,8 @@ class VoiceCommandSystem:
             return
         if any(fuzzy_contains_phrase(text, phrase) for phrase in ("stop", "halt", "freeze")):
             self._call_loco("StopMove")
+            if self.salute_controller is not None:
+                self.salute_controller.stop_animations()
             return
         if any(fuzzy_contains_phrase(text, phrase) for phrase in ("stand up", "stand", "get up", "high stand")):
             self._call_loco("HighStand")
@@ -850,32 +950,11 @@ class VoiceCommandSystem:
         if any(fuzzy_contains_phrase(text, phrase) for phrase in ("sit down", "sit", "squat")):
             self._call_loco("Sit")
             return
-        if any(
-            fuzzy_contains_phrase(text, phrase, threshold=0.72)
-            for phrase in (
-                "brunken oppna",
-                "oppna",
-                "open hands",
-                "open hand",
-                "opna",
-                "opp nar",
-            )
-        ):
-            self.open_for_barbell_loading()
-            return
-        if any(
-            fuzzy_contains_phrase(text, phrase, threshold=0.72)
-            for phrase in (
-                "brunken stang",
-                "stang",
-                "close hands",
-                "grip stick",
-                "grip barbell",
-                "steng",
-                "stangg",
-            )
-        ):
-            self.close_for_barbell_grip()
+        if any(fuzzy_contains_phrase(text, phrase) for phrase in ("curl", "bicep", "flex", "start exercise")):
+            if self.salute_controller is not None:
+                self.salute_controller.start_bicep_curl()
+            else:
+                self.log("[warn] bicep curl unavailable in audio-only mode")
             return
         if any(fuzzy_contains_phrase(text, phrase) for phrase in ("salute", "right salute")):
             if self.salute_controller is not None:
@@ -886,28 +965,6 @@ class VoiceCommandSystem:
 
         self.log(f"[state] unknown command: {text}")
 
-    def open_for_barbell_loading(self) -> None:
-        self.log("[state] opening hands + palms up")
-        # Left arm (7) + right arm (7), matching G1_29_JointArmIndex order.
-        q14 = np.array([
-            -0.35,  0.45,  0.00,  1.25,  0.00, -1.10, 0.00,
-            -0.35, -0.45,  0.00,  1.25,  0.00, -1.10, 0.00,
-        ], dtype=float)
-        if self.salute_controller is not None:
-            self.salute_controller.move_to_dual_arm_pose(q14, duration=1.4, hold=True)
-        else:
-            self.log("[warn] arm pose unavailable in audio-only mode")
-        if self.hand_controller is not None:
-            self.hand_controller.open_hands()
-        else:
-            self.log("[warn] hand controller unavailable; skipped open command")
-
-    def close_for_barbell_grip(self) -> None:
-        self.log("[state] closing hands for stick/barbell grip")
-        if self.hand_controller is not None:
-            self.hand_controller.close_hands_for_bar()
-        else:
-            self.log("[warn] hand controller unavailable; skipped close command")
 
     def shutdown(self, skip_loco_stop: bool = False) -> None:
         self.running = False
@@ -930,9 +987,10 @@ def main() -> None:
     parser.add_argument("--input-device", default="auto", help='Input device index or name fragment; use "auto" for the default microphone')
     parser.add_argument("--arecord-device", default="auto", help="ALSA device string when using arecord fallback backend; use auto to try available devices")
     parser.add_argument("--list-audio-devices", action="store_true", help="Print available input audio devices and exit")
+    parser.add_argument("--wake-word", default="cheese", help="The word used to wake the robot (default: cheese)")
     parser.add_argument("--wake-model", default="tiny", help="Whisper model for wake-word detection")
     parser.add_argument("--command-model", default="base", help="Whisper model for command transcription")
-    parser.add_argument("--language", default="auto", help="Whisper language code for transcription (e.g. sv, en, auto)")
+    parser.add_argument("--language", default="en", help="Whisper language code for transcription (e.g. sv, en, auto)")
     parser.add_argument("--mic-debug", action="store_true", help="Print per-chunk audio source, levels, and raw wake transcript before filtering")
     parser.add_argument("--mic-debug-save", action="store_true", help="Save each wake chunk to /tmp for listening tests (can create many files)")
     parser.add_argument("--switch-seconds", type=float, default=20.0, help="Force arecord source switch interval in seconds while waiting for wake word")
@@ -949,6 +1007,7 @@ def main() -> None:
         system = VoiceCommandSystem(
             interface=args.interface,
             domain_id=args.domain,
+            wake_word=args.wake_word,
             wake_model_name=args.wake_model,
             command_model_name=args.command_model,
             input_device=args.input_device,

@@ -32,30 +32,32 @@ Use this to run the fully local voice assistant on the Linux PC.
 2. RUN THE VOICE ASSISTANT:
    python3.12 brunken_voice.py --interface enp129s0 --domain 0
 
-   For stronger Swedish recognition across accents:
-   python3.12 brunken_voice.py --interface enp129s0 --domain 0 --language sv
+   For strong English recognition:
+   python3.12 brunken_voice.py --interface enp129s0 --domain 0 --language en
 
-3. IF YOUR MICROPHONE IS NOT THE DEFAULT DEVICE:
-   python3.12 brunken_voice.py --interface enp129s0 --domain 0 --input-device "your mic name"
+3. USING THE BLUE YETI MICROPHONE (Recommended):
+   If the Blue Yeti is plugged into your PC via USB, it often registers as 'hw:2,0'. Test it with:
+   
+   For local simulation mode (Matches Simulator Domain 1):
+   python3.12 brunken_voice.py --interface lo --domain 1 --language en --arecord-device "hw:2,0"
+   
+   For real robot mode (robot connected via Ethernet):
+   python3.12 brunken_voice.py --interface enp129s0 --domain 0 --language en --arecord-device "hw:2,0"
 
-4. IF YOU STILL SEE "<silence>" ON ALSA FALLBACK:
-   python3.12 brunken_voice.py --interface enp129s0 --domain 0 --language sv --arecord-device default --mic-debug --switch-seconds 20
+   *Note: If you encounter audio distortion, change "hw:2,0" to "plughw:2,0" to allow Linux to resample.*
 
-   To save each wake chunk and verify the real mic source by ear:
-   python3.12 brunken_voice.py --interface enp129s0 --domain 0 --language sv --arecord-device default --mic-debug --mic-debug-save --switch-seconds 20
+4. TROUBLESHOOTING MICROPHONE (if Yeti is not hw:2,0):
+   Run this to find your ALSA hardware device names:
+   arecord -l
+   Look for "Yeti Stereo Microphone" and note the card and device numbers (e.g., card 2, device 0 = hw:2,0).
 
-   Then inspect recordings:
-   ls -1t /tmp/brunken_wake_*.wav | head
-   aplay "<one file from above>"
-
-   If one source sounds correct, lock it explicitly for normal runs:
-   python3.12 brunken_voice.py --interface enp129s0 --domain 0 --language sv --arecord-device "pulse"
-
-5. NEW STICK/BARBELL HAND COMMANDS:
-    - Say: "brunken oppna" (or "brunken öppna")
-       -> Robot moves arms to a palms-up loading pose and opens both hands.
-    - Say: "brunken stang" (or "brunken stäng")
-       -> Robot closes both hands to grip the stick/barbell.
+5. EXERCISE / MOTION COMMANDS:
+    - Say: "cheese curl" or "cheese bicep"
+       -> Robot starts a continuous bicep curl animation.
+    - Say: "cheese salute"
+       -> Robot performs a right-hand greeting.
+    - Say: "cheese stop"
+       -> Stops all movement and cancels bicep curls.
 
 ================================================================================
 SECTION 2: REAL ROBOT
@@ -64,10 +66,11 @@ Use this ONLY after verifying logic in simulation.
 
 1. FIX NETWORKING (Run once per session):
    # Robot cable must be connected and robot Ethernet must be powered.
-   # Create/update a dedicated static profile for the robot NIC.
-   nmcli connection add type ethernet ifname enp129s0 con-name g1-static ipv4.method manual ipv4.addresses 192.168.123.123/24 ipv4.never-default yes autoconnect yes 2>/dev/null || true
-   nmcli connection modify g1-static ipv4.method manual ipv4.addresses 192.168.123.123/24 ipv4.never-default yes autoconnect yes
-   nmcli connection up g1-static
+   # Most Linux systems will automatically assign an IP (like 192.168.123.x) when plugged in.
+   # Verify your connection by running:
+   ip addr show enp129s0
+
+   # If you see an "inet 192.168.123.x" address, you are good to go! You do not need sudo.
 
    If this fails with "NO-CARRIER" or "Device is not activated", check:
    - Ethernet link LEDs are on at both ends
