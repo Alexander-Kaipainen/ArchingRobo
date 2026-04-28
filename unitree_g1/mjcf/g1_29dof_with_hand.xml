@@ -315,6 +315,13 @@
                             mesh="left_hand_palm_link" />
                           <geom pos="0.0415 0.003 0" quat="1 0 0 0" type="mesh" rgba="0.7 0.7 0.7 1"
                             mesh="left_hand_palm_link" />
+                          <!-- Left hand grip contact geometry -->
+                          <geom type="sphere" size="0.015" pos="0.12 -0.01 0.00" friction="1.5 0.5 0.01" rgba="0.7 0.5 0.5 0.3" />
+                          <geom type="sphere" size="0.015" pos="0.12 0.01 -0.025" friction="1.5 0.5 0.01" rgba="0.7 0.5 0.5 0.3" />
+                          <geom type="sphere" size="0.015" pos="0.12 0.01 0.025" friction="1.5 0.5 0.01" rgba="0.7 0.5 0.5 0.3" />
+                          <body name="left_hand_palm" pos="0.12 0 0">
+                            <inertial pos="0 0 0" mass="0.001" diaginertia="1e-06 1e-06 1e-06" />
+                          </body>
                           <body name="left_hand_thumb_0_link" pos="0.0695 0.003 0">
                             <inertial pos="-0.000354413 -0.0132989 0.000412362"
                               quat="0.385163 0.591021 -0.567321 0.424842" mass="0.0803302"
@@ -465,8 +472,15 @@
                             mesh="right_hand_palm_link" />
                           <geom pos="0.0415 -0.003 0" quat="1 0 0 0" type="mesh"
                             rgba="0.7 0.7 0.7 1" mesh="right_hand_palm_link" />
+                          <!-- Right hand grip contact geometry -->
+                          <geom type="sphere" size="0.015" pos="0.12 0.01 0.00" friction="1.5 0.5 0.01" rgba="0.7 0.5 0.5 0.3" />
+                          <geom type="sphere" size="0.015" pos="0.12 -0.01 -0.025" friction="1.5 0.5 0.01" rgba="0.7 0.5 0.5 0.3" />
+                          <geom type="sphere" size="0.015" pos="0.12 -0.01 0.025" friction="1.5 0.5 0.01" rgba="0.7 0.5 0.5 0.3" />
                           <camera name="right_wrist_camera" pos="0.1 0 0.1" xyaxes="0 -1 0 0 0 1"/>
 
+                          <body name="right_hand_palm" pos="0.12 0 0">
+                            <inertial pos="0 0 0" mass="0.001" diaginertia="1e-06 1e-06 1e-06" />
+                          </body>
                           <body name="right_hand_thumb_0_link" pos="0.0695 -0.003 0">
                             <inertial pos="-0.000354413 0.0132989 -0.000412362"
                               quat="0.424842 0.567321 -0.591021 0.385163" mass="0.0803302"

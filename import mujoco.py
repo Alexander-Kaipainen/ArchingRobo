@@ -67,6 +67,23 @@ def interp_pose(a: dict[str, float], b: dict[str, float], t: float) -> dict[str,
     return out
 
 
+def interp_key_poses(keys: list[tuple[float, dict[str, float]]], alpha: float) -> dict[str, float]:
+    if not keys:
+        return {}
+    if alpha <= keys[0][0]:
+        return dict(keys[0][1])
+    if alpha >= keys[-1][0]:
+        return dict(keys[-1][1])
+
+    for i in range(len(keys) - 1):
+        t0, p0 = keys[i]
+        t1, p1 = keys[i + 1]
+        if alpha <= t1:
+            a = smoothstep((alpha - t0) / max(1e-6, (t1 - t0)))
+            return interp_pose(p0, p1, a)
+    return dict(keys[-1][1])
+
+
 def main():
     if not os.path.exists(SCENE_PATH):
         raise FileNotFoundError(f"Scene not found: {SCENE_PATH}")
@@ -106,7 +123,11 @@ def main():
         "left_elbow_joint": 0.06,
         "right_elbow_joint": 0.06,
         "left_wrist_pitch_joint": 0.0,
+        "left_wrist_roll_joint": 0.0,
+        "left_wrist_yaw_joint": 0.0,
         "right_wrist_pitch_joint": 0.0,
+        "right_wrist_roll_joint": 0.0,
+        "right_wrist_yaw_joint": 0.0,
     }
 
     arm_ik_joint_names = [
@@ -140,43 +161,143 @@ def main():
     arm_ik_min = np.array(arm_ik_min, dtype=float)
     arm_ik_max = np.array(arm_ik_max, dtype=float)
 
-    hands_open = {
-        "left_hand_thumb_0_joint": 0.0,
-        "left_hand_thumb_1_joint": 0.0,
-        "left_hand_thumb_2_joint": 0.0,
-        "left_hand_index_0_joint": 0.0,
-        "left_hand_index_1_joint": 0.0,
-        "left_hand_middle_0_joint": 0.0,
-        "left_hand_middle_1_joint": 0.0,
-        "right_hand_thumb_0_joint": 0.0,
-        "right_hand_thumb_1_joint": 0.0,
-        "right_hand_thumb_2_joint": 0.0,
-        "right_hand_index_0_joint": 0.0,
-        "right_hand_index_1_joint": 0.0,
-        "right_hand_middle_0_joint": 0.0,
-        "right_hand_middle_1_joint": 0.0,
+    def mirrored_hand_pose(raw: dict[str, float]) -> dict[str, float]:
+        pose = {}
+        for side in ("left", "right"):
+            for name, val in raw.items():
+                pose[f"{side}_hand_{name}_joint"] = val
+        return pose
+
+    wrist_joint_names = [
+        "left_wrist_pitch_joint",
+        "left_wrist_roll_joint",
+        "left_wrist_yaw_joint",
+        "right_wrist_pitch_joint",
+        "right_wrist_roll_joint",
+        "right_wrist_yaw_joint",
+    ]
+
+    hand_joint_names = []
+    for side in ("left", "right"):
+        for name in ("thumb_0", "thumb_1", "thumb_2", "index_0", "index_1", "middle_0", "middle_1"):
+            hand_joint_names.append(f"{side}_hand_{name}_joint")
+
+    tracked_hand_and_wrist_joints = set(wrist_joint_names + hand_joint_names)
+    joint_ranges: dict[str, tuple[float, float]] = {}
+    for jname in tracked_hand_and_wrist_joints:
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, jname)
+        if jid < 0:
+            continue
+        if model.jnt_limited[jid]:
+            joint_ranges[jname] = (float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1]))
+
+    def normalize_joint_target(jname: str, desired: float) -> float:
+        limits = joint_ranges.get(jname)
+        if limits is None:
+            return float(desired)
+        lo, hi = limits
+        direct = float(np.clip(desired, lo, hi))
+        flipped = float(np.clip(-desired, lo, hi))
+        direct_err = abs(abs(direct) - abs(desired))
+        flipped_err = abs(abs(flipped) - abs(desired))
+        if flipped_err + 1e-12 < direct_err:
+            return flipped
+        return direct
+
+    def normalize_pose_targets(raw_pose: dict[str, float]) -> dict[str, float]:
+        out = {}
+        for jname, val in raw_pose.items():
+            out[jname] = normalize_joint_target(jname, val)
+        return out
+
+    def make_hand_wrist_pose(finger_raw: dict[str, float], wrist_raw: dict[str, float]) -> dict[str, float]:
+        raw = {}
+        raw.update(mirrored_hand_pose(finger_raw))
+        raw.update(wrist_raw)
+        return normalize_pose_targets(raw)
+
+    fingers_open = {
+        "thumb_0": -0.20,
+        "thumb_1": 0.05,
+        "thumb_2": 0.05,
+        "index_0": 0.05,
+        "index_1": 0.00,
+        "middle_0": 0.05,
+        "middle_1": 0.00,
+    }
+    fingers_drape = {
+        "thumb_0": -0.12,
+        "thumb_1": 0.06,
+        "thumb_2": 0.06,
+        "index_0": -0.18,
+        "index_1": 0.18,
+        "middle_0": -0.18,
+        "middle_1": 0.18,
+    }
+    fingers_mid_curl = {
+        "thumb_0": -0.06,
+        "thumb_1": 0.10,
+        "thumb_2": 0.12,
+        "index_0": -0.50,
+        "index_1": 0.55,
+        "middle_0": -0.50,
+        "middle_1": 0.55,
+    }
+    fingers_wrap = {
+        "thumb_0": 0.05,
+        "thumb_1": 0.25,
+        "thumb_2": 0.30,
+        "index_0": -1.10,
+        "index_1": 1.40,
+        "middle_0": -1.15,
+        "middle_1": 1.45,
+    }
+    fingers_thumb_lock = {
+        "thumb_0": 0.35,
+        "thumb_1": 0.70,
+        "thumb_2": 1.10,
+        "index_0": -1.10,
+        "index_1": 1.40,
+        "middle_0": -1.15,
+        "middle_1": 1.45,
     }
 
-    hands_closed = {
-        "left_hand_thumb_0_joint": 0.35,
-        "left_hand_thumb_1_joint": 0.65,
-        "left_hand_thumb_2_joint": 0.65,
-        "left_hand_index_0_joint": 0.9,
-        "left_hand_index_1_joint": 0.9,
-        "left_hand_middle_0_joint": 0.9,
-        "left_hand_middle_1_joint": 0.9,
-        "right_hand_thumb_0_joint": 0.35,
-        "right_hand_thumb_1_joint": 0.65,
-        "right_hand_thumb_2_joint": 0.65,
-        "right_hand_index_0_joint": 0.9,
-        "right_hand_index_1_joint": 0.9,
-        "right_hand_middle_0_joint": 0.9,
-        "right_hand_middle_1_joint": 0.9,
+    wrist_neutral = {
+        "left_wrist_pitch_joint": 0.0,
+        "left_wrist_roll_joint": 0.0,
+        "left_wrist_yaw_joint": 0.0,
+        "right_wrist_pitch_joint": 0.0,
+        "right_wrist_roll_joint": 0.0,
+        "right_wrist_yaw_joint": 0.0,
+    }
+    wrist_hover = {
+        "left_wrist_pitch_joint": 0.10,
+        "left_wrist_roll_joint": 0.0,
+        "left_wrist_yaw_joint": 0.0,
+        "right_wrist_pitch_joint": 0.10,
+        "right_wrist_roll_joint": 0.0,
+        "right_wrist_yaw_joint": 0.0,
+    }
+    wrist_drape = {
+        "left_wrist_pitch_joint": 0.10,
+        "left_wrist_roll_joint": 0.087,
+        "left_wrist_yaw_joint": 0.0,
+        "right_wrist_pitch_joint": 0.10,
+        "right_wrist_roll_joint": -0.087,
+        "right_wrist_yaw_joint": 0.0,
     }
 
-    pose_open_rack = {**lower_body, **arms_rack, **hands_open}
-    pose_closed_rack = {**lower_body, **arms_rack, **hands_closed}
-    pose_grabbed = {**lower_body, **hands_closed}
+    hands_open_rack = make_hand_wrist_pose(fingers_open, wrist_neutral)
+    hands_hover = make_hand_wrist_pose(fingers_open, wrist_hover)
+    hands_drape = make_hand_wrist_pose(fingers_drape, wrist_drape)
+    hands_mid_curl = make_hand_wrist_pose(fingers_mid_curl, wrist_drape)
+    hands_wrap = make_hand_wrist_pose(fingers_wrap, wrist_drape)
+    hands_thumb_lock = make_hand_wrist_pose(fingers_thumb_lock, wrist_drape)
+    hands_wrist_stack = make_hand_wrist_pose(fingers_thumb_lock, wrist_neutral)
+    hands_squeeze = make_hand_wrist_pose(fingers_thumb_lock, wrist_neutral)
+
+    pose_rack = {**lower_body, **arms_rack}
+    pose_grabbed = {**lower_body, **arms_rack}
 
     def attached_bar_pos() -> np.ndarray:
         if left_hand_body < 0 or right_hand_body < 0:
@@ -234,7 +355,7 @@ def main():
         return data.xpos[bid].copy() + rot @ model.jnt_pos[jid]
 
     set_free_joint_pose(model, data, "floating_base_joint", robot_base_pos, robot_base_quat)
-    apply_joint_pose(data, qmap, pose_closed_rack)
+    apply_joint_pose(data, qmap, pose_rack)
     mujoco.mj_forward(model, data)
     rack_lp = data.xpos[left_hand_body].copy() if left_hand_body >= 0 else np.array([0.0, 0.12, 0.0])
     rack_rp = data.xpos[right_hand_body].copy() if right_hand_body >= 0 else np.array([0.0, -0.12, 0.0])
@@ -246,35 +367,135 @@ def main():
     else:
         shoulder_width = abs(rack_lp[1] - rack_rp[1])
 
-    grip_width = 1.5 * shoulder_width
+    grip_width = 1.65 * shoulder_width
     grip_half_width = 0.5 * grip_width
 
     bar_unrack = np.array([-1.20, 0.0, 0.86], dtype=float)
     bar_bottom = np.array([-1.10, 0.0, 0.70], dtype=float)
 
-    # One clean rep with explicit chest-touch bar path
+    # One clean rep with explicit chest-touch bar path and sequential grip choreography.
     keyframes = [
-        (0.0, pose_open_rack, 0.0, None),
-        (0.8, pose_closed_rack, 0.0, None),
-        (1.8, pose_grabbed, 1.0, bar_unrack),
-        (3.8, pose_grabbed, 1.0, bar_bottom),
-        (4.6, pose_grabbed, 1.0, bar_bottom),
-        (6.4, pose_grabbed, 1.0, bar_unrack),
-        (7.2, pose_grabbed, 1.0, bar_rack),
-        (7.8, pose_open_rack, 0.0, None),
+        (0.0, pose_rack, hands_open_rack, 0.0, None),
+        (0.8, pose_rack, hands_hover, 0.0, None),
+        (1.8, pose_grabbed, hands_squeeze, 1.0, bar_unrack),
+        (3.8, pose_grabbed, hands_squeeze, 1.0, bar_bottom),
+        (4.6, pose_grabbed, hands_squeeze, 1.0, bar_bottom),
+        (6.4, pose_grabbed, hands_squeeze, 1.0, bar_unrack),
+        (7.2, pose_grabbed, hands_squeeze, 1.0, bar_rack),
+        (7.8, pose_rack, hands_open_rack, 0.0, None),
     ]
+
+    grip_micro_keys = [
+        (0.00, hands_hover),
+        (0.30, hands_drape),
+        (0.52, hands_mid_curl),
+        (0.62, hands_wrap),
+        (0.72, hands_wrap),
+        (0.82, hands_thumb_lock),
+        (0.92, hands_wrist_stack),
+        (1.00, hands_squeeze),
+    ]
+    grip_sequence_segment_index = 1
     total_time = keyframes[-1][0]
 
-    def apply_state(pose: dict[str, float], grip: float, bar_target: np.ndarray | None):
+    hand_z_micro_keys = [
+        (0.00, 0.04),
+        (0.30, 0.032),
+        (0.52, 0.010),
+        (0.62, 0.006),
+        (0.82, 0.002),
+        (0.92, 0.000),
+        (1.00, 0.000),
+    ]
+    grip_attach_micro_keys = [
+        (0.00, 0.0),
+        (0.82, 0.0),
+        (0.92, 0.35),
+        (1.00, 1.0),
+    ]
+    bar_lift_micro_keys = [
+        (0.00, 0.0),
+        (0.82, 0.0),
+        (0.90, 0.25),
+        (1.00, 1.0),
+    ]
+
+    def interp_scalar_keys(keys: list[tuple[float, float]], alpha: float) -> float:
+        if not keys:
+            return 0.0
+        if alpha <= keys[0][0]:
+            return float(keys[0][1])
+        if alpha >= keys[-1][0]:
+            return float(keys[-1][1])
+
+        for i in range(len(keys) - 1):
+            t0, v0 = keys[i]
+            t1, v1 = keys[i + 1]
+            if alpha <= t1:
+                a = smoothstep((alpha - t0) / max(1e-6, (t1 - t0)))
+                return float(v0 + a * (v1 - v0))
+        return float(keys[-1][1])
+
+    def sample_state(t: float) -> tuple[dict[str, float], dict[str, float], float, np.ndarray | None, np.ndarray | None, float]:
+        if t > total_time:
+            return pose_rack, hands_open_rack, 0.0, None, None, -0.02
+
+        i = 0
+        while i + 1 < len(keyframes) and t > keyframes[i + 1][0]:
+            i += 1
+
+        t0, p0, h0, g0, b0 = keyframes[i]
+        t1, p1, h1, g1, b1 = keyframes[i + 1]
+        a = smoothstep((t - t0) / max(1e-6, (t1 - t0)))
+
+        pose = interp_pose(p0, p1, a)
+        grip = g0 + a * (g1 - g0)
+
+        if i == grip_sequence_segment_index:
+            hand_pose = interp_key_poses(grip_micro_keys, a)
+            grip = interp_scalar_keys(grip_attach_micro_keys, a)
+            bar_lift = interp_scalar_keys(bar_lift_micro_keys, a)
+            bar_target = (1.0 - bar_lift) * bar_rack + bar_lift * bar_unrack
+            ik_anchor = bar_target
+            hand_z_offset = interp_scalar_keys(hand_z_micro_keys, a)
+        else:
+            hand_pose = interp_pose(h0, h1, a)
+            ik_anchor = None
+            hand_z_offset = -0.02
+
+        if i != grip_sequence_segment_index:
+            if b0 is None and b1 is None:
+                bar_target = None
+            elif b0 is None:
+                bar_target = (1.0 - a) * bar_rack + a * b1
+            elif b1 is None:
+                bar_target = (1.0 - a) * b0 + a * bar_rack
+            else:
+                bar_target = (1.0 - a) * b0 + a * b1
+
+        return pose, hand_pose, grip, bar_target, ik_anchor, hand_z_offset
+
+    def apply_state(
+        pose: dict[str, float],
+        hand_pose: dict[str, float],
+        grip: float,
+        bar_target: np.ndarray | None,
+        ik_anchor: np.ndarray | None,
+        hand_z_offset: float,
+    ):
         set_free_joint_pose(model, data, "floating_base_joint", robot_base_pos, robot_base_quat)
         apply_joint_pose(data, qmap, pose)
         data.qvel[:] = 0.0
         mujoco.mj_forward(model, data)
 
         if bar_target is not None and grip > 1e-4:
-            left_target = bar_target + np.array([0.0, grip_half_width, -0.02], dtype=float)
-            right_target = bar_target + np.array([0.0, -grip_half_width, -0.02], dtype=float)
+            anchor = ik_anchor if ik_anchor is not None else bar_target
+            left_target = anchor + np.array([0.0, grip_half_width, hand_z_offset], dtype=float)
+            right_target = anchor + np.array([0.0, -grip_half_width, hand_z_offset], dtype=float)
             solve_arm_ik(left_target, right_target)
+
+        apply_joint_pose(data, qmap, hand_pose)
+        mujoco.mj_forward(model, data)
 
         grip = float(np.clip(grip, 0.0, 1.0))
         if bar_target is None:
@@ -288,35 +509,18 @@ def main():
         mujoco.mj_forward(model, data)
 
     # Initial settle
-    apply_state(pose_open_rack, 0.0, None)
+    apply_state(pose_rack, hands_open_rack, 0.0, None, None, -0.02)
 
     if HEADLESS:
         start = time.perf_counter()
         while True:
             t = time.perf_counter() - start
             if t > total_time:
-                apply_state(pose_open_rack, 0.0, None)
+                apply_state(pose_rack, hands_open_rack, 0.0, None, None, -0.02)
                 break
 
-            i = 0
-            while i + 1 < len(keyframes) and t > keyframes[i + 1][0]:
-                i += 1
-            t0, p0, g0, b0 = keyframes[i]
-            t1, p1, g1, b1 = keyframes[i + 1]
-            a = smoothstep((t - t0) / max(1e-6, (t1 - t0)))
-            pose = interp_pose(p0, p1, a)
-            grip = g0 + a * (g1 - g0)
-
-            if b0 is None and b1 is None:
-                bar_target = None
-            elif b0 is None:
-                bar_target = b1
-            elif b1 is None:
-                bar_target = b0
-            else:
-                bar_target = (1.0 - a) * b0 + a * b1
-
-            apply_state(pose, grip, bar_target)
+            pose, hand_pose, grip, bar_target, ik_anchor, hand_z_offset = sample_state(t)
+            apply_state(pose, hand_pose, grip, bar_target, ik_anchor, hand_z_offset)
 
         print("One rep complete.")
         return
@@ -333,32 +537,19 @@ def main():
     while viewer.is_running():
         t = time.perf_counter() - start
         if t > total_time:
-            pose = pose_open_rack
+            pose = pose_rack
+            hand_pose = hands_open_rack
             grip = 0.0
             bar_target = None
+            ik_anchor = None
+            hand_z_offset = -0.02
             if not done_printed:
                 print("One rep complete.")
                 done_printed = True
         else:
-            i = 0
-            while i + 1 < len(keyframes) and t > keyframes[i + 1][0]:
-                i += 1
-            t0, p0, g0, b0 = keyframes[i]
-            t1, p1, g1, b1 = keyframes[i + 1]
-            a = smoothstep((t - t0) / max(1e-6, (t1 - t0)))
-            pose = interp_pose(p0, p1, a)
-            grip = g0 + a * (g1 - g0)
+            pose, hand_pose, grip, bar_target, ik_anchor, hand_z_offset = sample_state(t)
 
-            if b0 is None and b1 is None:
-                bar_target = None
-            elif b0 is None:
-                bar_target = b1
-            elif b1 is None:
-                bar_target = b0
-            else:
-                bar_target = (1.0 - a) * b0 + a * b1
-
-        apply_state(pose, grip, bar_target)
+        apply_state(pose, hand_pose, grip, bar_target, ik_anchor, hand_z_offset)
         viewer.sync()
         time.sleep(VIEW_DT)
 

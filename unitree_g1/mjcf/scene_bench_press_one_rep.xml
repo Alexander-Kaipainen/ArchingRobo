@@ -44,21 +44,27 @@
 
     <body name="barbell" pos="-1.25 0 0.945">
       <freejoint name="barbell_free" />
-      <inertial pos="0 0 0" mass="20.0" diaginertia="0.01 1.00 1.00" />
+      <inertial pos="0 0 0" mass="25.0" diaginertia="0.05 1.50 1.50" />
 
-      <geom name="bar_shaft" type="cylinder" size="0.014" fromto="0 -0.50 0 0 0.50 0" rgba="0.86 0.86 0.88 1" mass="0" />
-      <geom name="bar_knurl_l" type="cylinder" size="0.015" fromto="0 -0.26 0 0 -0.14 0" rgba="0.74 0.74 0.76 1" mass="0" />
-      <geom name="bar_knurl_r" type="cylinder" size="0.015" fromto="0 0.14 0 0 0.26 0" rgba="0.74 0.74 0.76 1" mass="0" />
+      <geom name="bar_shaft" type="cylinder" size="0.014" fromto="0 -0.50 0 0 0.50 0" rgba="0.86 0.86 0.88 1" mass="0" friction="1.5 0.5 0.01" />
+      <geom name="bar_knurl_l" type="cylinder" size="0.015" fromto="0 -0.26 0 0 -0.14 0" rgba="0.74 0.74 0.76 1" mass="0" friction="1.5 0.5 0.01" />
+      <geom name="bar_knurl_r" type="cylinder" size="0.015" fromto="0 0.14 0 0 0.26 0" rgba="0.74 0.74 0.76 1" mass="0" friction="1.5 0.5 0.01" />
 
-      <geom name="bar_sleeve_l" type="cylinder" size="0.025" fromto="0 -0.68 0 0 -0.50 0" rgba="0.64 0.64 0.66 1" mass="0" />
-      <geom name="bar_sleeve_r" type="cylinder" size="0.025" fromto="0 0.50 0 0 0.68 0" rgba="0.64 0.64 0.66 1" mass="0" />
-      <geom name="bar_collar_l" type="cylinder" size="0.030" fromto="0 -0.71 0 0 -0.68 0" rgba="0.56 0.56 0.58 1" mass="0" />
-      <geom name="bar_collar_r" type="cylinder" size="0.030" fromto="0 0.68 0 0 0.71 0" rgba="0.56 0.56 0.58 1" mass="0" />
+      <geom name="bar_sleeve_l" type="cylinder" size="0.025" fromto="0 -0.68 0 0 -0.50 0" rgba="0.64 0.64 0.66 1" mass="0" friction="1.5 0.5 0.01" />
+      <geom name="bar_sleeve_r" type="cylinder" size="0.025" fromto="0 0.50 0 0 0.68 0" rgba="0.64 0.64 0.66 1" mass="0" friction="1.5 0.5 0.01" />
+      <geom name="bar_collar_l" type="cylinder" size="0.030" fromto="0 -0.71 0 0 -0.68 0" rgba="0.56 0.56 0.58 1" mass="0" friction="1.5 0.5 0.01" />
+      <geom name="bar_collar_r" type="cylinder" size="0.030" fromto="0 0.68 0 0 0.71 0" rgba="0.56 0.56 0.58 1" mass="0" friction="1.5 0.5 0.01" />
 
-      <geom name="bar_plate_l_outer" type="cylinder" size="0.120" fromto="0 -0.84 0 0 -0.79 0" rgba="0.07 0.07 0.08 1" mass="0" />
-      <geom name="bar_plate_l_inner" type="cylinder" size="0.105" fromto="0 -0.79 0 0 -0.71 0" rgba="0.10 0.10 0.11 1" mass="0" />
-      <geom name="bar_plate_r_inner" type="cylinder" size="0.105" fromto="0 0.71 0 0 0.79 0" rgba="0.10 0.10 0.11 1" mass="0" />
-      <geom name="bar_plate_r_outer" type="cylinder" size="0.120" fromto="0 0.79 0 0 0.84 0" rgba="0.07 0.07 0.08 1" mass="0" />
+      <geom name="bar_plate_l_outer" type="cylinder" size="0.120" fromto="0 -0.84 0 0 -0.79 0" rgba="0.07 0.07 0.08 1" mass="0" friction="1.5 0.5 0.01" />
+      <geom name="bar_plate_l_inner" type="cylinder" size="0.105" fromto="0 -0.79 0 0 -0.71 0" rgba="0.10 0.10 0.11 1" mass="0" friction="1.5 0.5 0.01" />
+      <geom name="bar_plate_r_inner" type="cylinder" size="0.105" fromto="0 0.71 0 0 0.79 0" rgba="0.10 0.10 0.11 1" mass="0" friction="1.5 0.5 0.01" />
+      <geom name="bar_plate_r_outer" type="cylinder" size="0.120" fromto="0 0.79 0 0 0.84 0" rgba="0.07 0.07 0.08 1" mass="0" friction="1.5 0.5 0.01" />
     </body>
   </worldbody>
+
+  <equality>
+    <connect body1="barbell" body2="left_hand_palm" anchor="0 -0.275 0" solimp="0.9 0.95 0.0001" solref="0.02 1"/>
+    <connect body1="barbell" body2="right_hand_palm" anchor="0 0.275 0" solimp="0.9 0.95 0.0001" solref="0.02 1"/>
+  </equality>
+
 </mujoco>

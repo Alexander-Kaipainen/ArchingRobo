@@ -18,5 +18,45 @@
   <worldbody>
     <light pos="0 0 1.5" dir="0 0 -1" directional="true" />
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" />
-  <body name="bench_body" pos="-0.8 0 0"><geom name="bench_pad_top" type="box" size="0.55 0.15 0.04" pos="0 0 0.44" rgba="0.05 0.05 0.05 1" friction="1.4 0.8 0.01" /><geom name="bench_seat" type="box" size="0.20 0.15 0.04" pos="0.72 0 0.39" rgba="0.05 0.05 0.05 1" friction="1.4 0.8 0.01" /><geom name="bench_beam" type="box" size="0.55 0.03 0.02" pos="0 0 0.38" rgba="0.25 0.25 0.25 1" /><geom name="bench_leg_fl" type="box" size="0.025 0.025 0.19" pos="0.50 -0.12 0.19" rgba="0.25 0.25 0.25 1" /><geom name="bench_leg_fr" type="box" size="0.025 0.025 0.19" pos="0.50 0.12 0.19" rgba="0.25 0.25 0.25 1" /><geom name="bench_leg_rl" type="box" size="0.025 0.025 0.19" pos="-0.50 -0.12 0.19" rgba="0.25 0.25 0.25 1" /><geom name="bench_leg_rr" type="box" size="0.025 0.025 0.19" pos="-0.50 0.12 0.19" rgba="0.25 0.25 0.25 1" /><geom name="bench_leg_sl" type="box" size="0.025 0.025 0.175" pos="0.88 -0.12 0.175" rgba="0.25 0.25 0.25 1" /><geom name="bench_leg_sr" type="box" size="0.025 0.025 0.175" pos="0.88 0.12 0.175" rgba="0.25 0.25 0.25 1" /></body><body name="upright_left" pos="-1.3 -0.35 0"><geom name="upright_left_post" type="box" size="0.03 0.03 0.55" pos="0 0 0.55" rgba="0.80 0.00 0.00 1" /><geom name="upright_left_base" type="box" size="0.10 0.06 0.01" pos="0 0 0.01" rgba="0.30 0.30 0.30 1" /><geom name="jhook_left_floor" type="box" size="0.05 0.03 0.008" pos="0.05 0 0.92" rgba="0.62 0.62 0.62 1" /><geom name="jhook_left_back" type="box" size="0.008 0.03 0.04" pos="0.005 0 0.955" rgba="0.62 0.62 0.62 1" /><geom name="jhook_left_front" type="box" size="0.005 0.03 0.025" pos="0.10 0 0.95" rgba="0.62 0.62 0.62 1" /></body><body name="upright_right" pos="-1.3 0.35 0"><geom name="upright_right_post" type="box" size="0.03 0.03 0.55" pos="0 0 0.55" rgba="0.80 0.00 0.00 1" /><geom name="upright_right_base" type="box" size="0.10 0.06 0.01" pos="0 0 0.01" rgba="0.30 0.30 0.30 1" /><geom name="jhook_right_floor" type="box" size="0.05 0.03 0.008" pos="0.05 0 0.92" rgba="0.62 0.62 0.62 1" /><geom name="jhook_right_back" type="box" size="0.008 0.03 0.04" pos="0.005 0 0.955" rgba="0.62 0.62 0.62 1" /><geom name="jhook_right_front" type="box" size="0.005 0.03 0.025" pos="0.10 0 0.95" rgba="0.62 0.62 0.62 1" /></body><body name="barbell" pos="-1.25 0 0.945"><freejoint name="barbell_free" /><inertial pos="0 0 0" mass="20.0" diaginertia="0.01 2.0 2.0" /><geom name="bar_shaft" type="cylinder" size="0.014 0.55" euler="90 0 0" rgba="0.85 0.85 0.85 1" friction="1.0 0.5 0.01" /><geom name="bar_collar_l" type="cylinder" size="0.025 0.015" pos="0 -0.56 0" euler="90 0 0" rgba="0.65 0.65 0.65 1" /><geom name="bar_collar_r" type="cylinder" size="0.025 0.015" pos="0 0.56 0" euler="90 0 0" rgba="0.65 0.65 0.65 1" /><geom name="bar_sleeve_l" type="cylinder" size="0.025 0.20" pos="0 -0.775 0" euler="90 0 0" rgba="0.72 0.72 0.72 1" /><geom name="bar_sleeve_r" type="cylinder" size="0.025 0.20" pos="0 0.775 0" euler="90 0 0" rgba="0.72 0.72 0.72 1" /></body></worldbody>
+    <body name="bench_body" pos="-0.8 0 0">
+      <geom name="bench_pad_top" type="box" size="0.55 0.15 0.04" pos="0 0 0.44" rgba="0.05 0.05 0.05 1" friction="1.4 0.8 0.01" />
+      <geom name="bench_seat" type="box" size="0.20 0.15 0.04" pos="0.72 0 0.39" rgba="0.05 0.05 0.05 1" friction="1.4 0.8 0.01" />
+      <geom name="bench_beam" type="box" size="0.55 0.03 0.02" pos="0 0 0.38" rgba="0.25 0.25 0.25 1" />
+      <geom name="bench_leg_fl" type="box" size="0.025 0.025 0.19" pos="0.50 -0.12 0.19" rgba="0.25 0.25 0.25 1" />
+      <geom name="bench_leg_fr" type="box" size="0.025 0.025 0.19" pos="0.50 0.12 0.19" rgba="0.25 0.25 0.25 1" />
+      <geom name="bench_leg_rl" type="box" size="0.025 0.025 0.19" pos="-0.50 -0.12 0.19" rgba="0.25 0.25 0.25 1" />
+      <geom name="bench_leg_rr" type="box" size="0.025 0.025 0.19" pos="-0.50 0.12 0.19" rgba="0.25 0.25 0.25 1" />
+      <geom name="bench_leg_sl" type="box" size="0.025 0.025 0.175" pos="0.88 -0.12 0.175" rgba="0.25 0.25 0.25 1" />
+      <geom name="bench_leg_sr" type="box" size="0.025 0.025 0.175" pos="0.88 0.12 0.175" rgba="0.25 0.25 0.25 1" />
+    </body>
+    <body name="upright_left" pos="-1.3 -0.35 0">
+      <geom name="upright_left_post" type="box" size="0.03 0.03 0.55" pos="0 0 0.55" rgba="0.80 0.00 0.00 1" />
+      <geom name="upright_left_base" type="box" size="0.10 0.06 0.01" pos="0 0 0.01" rgba="0.30 0.30 0.30 1" />
+      <geom name="jhook_left_floor" type="box" size="0.05 0.03 0.008" pos="0.05 0 0.92" rgba="0.62 0.62 0.62 1" />
+      <geom name="jhook_left_back" type="box" size="0.008 0.03 0.04" pos="0.005 0 0.955" rgba="0.62 0.62 0.62 1" />
+      <geom name="jhook_left_front" type="box" size="0.005 0.03 0.025" pos="0.10 0 0.95" rgba="0.62 0.62 0.62 1" />
+    </body>
+    <body name="upright_right" pos="-1.3 0.35 0">
+      <geom name="upright_right_post" type="box" size="0.03 0.03 0.55" pos="0 0 0.55" rgba="0.80 0.00 0.00 1" />
+      <geom name="upright_right_base" type="box" size="0.10 0.06 0.01" pos="0 0 0.01" rgba="0.30 0.30 0.30 1" />
+      <geom name="jhook_right_floor" type="box" size="0.05 0.03 0.008" pos="0.05 0 0.92" rgba="0.62 0.62 0.62 1" />
+      <geom name="jhook_right_back" type="box" size="0.008 0.03 0.04" pos="0.005 0 0.955" rgba="0.62 0.62 0.62 1" />
+      <geom name="jhook_right_front" type="box" size="0.005 0.03 0.025" pos="0.10 0 0.95" rgba="0.62 0.62 0.62 1" />
+    </body>
+    <body name="barbell" pos="-1.25 0 0.945">
+      <freejoint name="barbell_free" />
+      <inertial pos="0 0 0" mass="25.0" diaginertia="0.05 1.50 1.50" />
+      <geom name="bar_shaft" type="cylinder" size="0.014 0.55" euler="90 0 0" rgba="0.85 0.85 0.85 1" friction="1.5 0.5 0.01" />
+      <geom name="bar_collar_l" type="cylinder" size="0.025 0.015" pos="0 -0.56 0" euler="90 0 0" rgba="0.65 0.65 0.65 1" />
+      <geom name="bar_collar_r" type="cylinder" size="0.025 0.015" pos="0 0.56 0" euler="90 0 0" rgba="0.65 0.65 0.65 1" />
+      <geom name="bar_sleeve_l" type="cylinder" size="0.025 0.20" pos="0 -0.775 0" euler="90 0 0" rgba="0.72 0.72 0.72 1" />
+      <geom name="bar_sleeve_r" type="cylinder" size="0.025 0.20" pos="0 0.775 0" euler="90 0 0" rgba="0.72 0.72 0.72 1" />
+    </body>
+  </worldbody>
+
+  <equality>
+    <connect body1="barbell" body2="left_hand_palm" anchor="0 -0.275 0" solimp="0.9 0.95 0.0001" solref="0.02 1"/>
+    <connect body1="barbell" body2="right_hand_palm" anchor="0 0.275 0" solimp="0.9 0.95 0.0001" solref="0.02 1"/>
+  </equality>
+
 </mujoco>
