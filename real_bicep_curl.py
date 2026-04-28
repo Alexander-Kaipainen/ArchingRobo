@@ -38,6 +38,14 @@ def main():
         controller._running = False
         time.sleep(0.1) 
         controller._running = True 
+    except TimeoutError as e:
+        if args.sim:
+            print(f"ERROR: {e}")
+            print("SIM MODE REQUIRES THE MUJOCO BRIDGE TO BE RUNNING FIRST:")
+            print("  python3.12 tests/g1_mujoco_sim/unitree_mujoco.py")
+        else:
+            print(f"ERROR: Failed to initialize controller: {e}")
+        return
     except Exception as e:
         print(f"ERROR: Failed to initialize controller: {e}")
         return

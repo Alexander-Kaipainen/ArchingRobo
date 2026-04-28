@@ -1,3 +1,4 @@
+import os
 import time
 import mujoco
 import mujoco.viewer
@@ -7,10 +8,21 @@ import numpy as np
 import pygame
 import sys
 
+from unitree_sdk2py.core import channel as dds_channel
 from unitree_sdk2py.core.channel import ChannelFactoryInitialize
 from unitree_sdk2py_bridge import UnitreeSdk2Bridge, ElasticBand
 
 import config
+
+
+def _patch_cyclonedds_trace_output():
+    trace_config = getattr(dds_channel, "ChannelConfigHasInterface", "")
+    if "/tmp/cdds.LOG" in trace_config:
+        trace_path = f"/tmp/cdds.{os.getpid()}.LOG"
+        dds_channel.ChannelConfigHasInterface = trace_config.replace("/tmp/cdds.LOG", trace_path)
+
+
+_patch_cyclonedds_trace_output()
 
 # Global lock for thread synchronization
 locker = threading.Lock()

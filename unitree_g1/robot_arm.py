@@ -1,13 +1,25 @@
+import os
 import numpy as np
 import threading
 import time
 from enum import IntEnum
 
 
+from unitree_sdk2py.core import channel as dds_channel
 from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber, ChannelFactoryInitialize # dds
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_                                 # idl
 from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
 from unitree_sdk2py.utils.crc import CRC
+
+
+def _patch_cyclonedds_trace_output():
+    trace_config = getattr(dds_channel, "ChannelConfigHasInterface", "")
+    if "/tmp/cdds.LOG" in trace_config:
+        trace_path = f"/tmp/cdds.{os.getpid()}.LOG"
+        dds_channel.ChannelConfigHasInterface = trace_config.replace("/tmp/cdds.LOG", trace_path)
+
+
+_patch_cyclonedds_trace_output()
 
 kTopicLowCommand = "rt/lowcmd"
 kTopicLowState = "rt/lowstate"

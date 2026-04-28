@@ -9,6 +9,7 @@ Use this to test your logic safely before running on the real robot.
 
 1. START THE SIMULATOR (Terminal A):
    python3.12 ark_unitree_g1/tests/g1_mujoco_sim/unitree_mujoco.py
+   # This is the MuJoCo bridge; keep it running before the controller.
    
 2. RUN THE CONTROLLER (Terminal B):
    python3.12 real_bicep_curl.py --sim
