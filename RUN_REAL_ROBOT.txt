@@ -45,6 +45,11 @@ Use this to run the fully local voice assistant on the Linux PC.
    python3.12 brunken_voice.py --interface enp129s0 --domain 0 --language en --arecord-device "hw:2,0"
 
    *Note: If you encounter audio distortion, change "hw:2,0" to "plughw:2,0" to allow Linux to resample.*
+   
+5. CUSTOMIZING THE WAKE WORD (Optional):
+   You can change the robot's "name" by using the `--wake-word` flag:
+   `python3.12 brunken_voice.py --interface lo --domain 1 --wake-word "robot"`
+   (The robot will now respond to "robot salute" instead of "cheese salute")
 
 4. TROUBLESHOOTING MICROPHONE (if Yeti is not hw:2,0):
    Run this to find your ALSA hardware device names:
@@ -54,6 +59,10 @@ Use this to run the fully local voice assistant on the Linux PC.
 5. EXERCISE / MOTION COMMANDS:
     - Say: "cheese curl" or "cheese bicep"
        -> Robot starts a continuous bicep curl animation.
+    - Say: "cheese squat"
+       -> Robot starts a continuous squat loop.
+    - Say: "cheese lateral raise" or "cheese shoulder raise"
+       -> Robot starts a continuous lateral raise loop.
     - Say: "cheese salute"
        -> Robot performs a right-hand greeting.
     - Say: "cheese stop"

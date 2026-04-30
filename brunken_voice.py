@@ -324,6 +324,20 @@ class LowLevelSaluteController:
         self._animation_stop_event = threading.Event()
         self._running = True
         self._target_q = np.zeros(NUM_MOTORS, dtype=float)
+        self._target_kp = np.full(NUM_MOTORS, 20.0, dtype=float)
+        self._target_kd = np.full(NUM_MOTORS, 3.0, dtype=float)
+        # Restore right arm high gains
+        for idx in range(NUM_MOTORS):
+            if idx in RIGHT_ARM_INDICES:
+                if idx == 25:
+                    self._target_kp[idx] = 140.0
+                    self._target_kd[idx] = 5.0
+                elif idx >= 26:
+                    self._target_kp[idx] = 70.0
+                    self._target_kd[idx] = 3.0
+                else:
+                    self._target_kp[idx] = 120.0
+                    self._target_kd[idx] = 4.0
         
         self.wait_for_state(timeout=2.0)
         with self.state_lock:
@@ -351,8 +365,8 @@ class LowLevelSaluteController:
     def _prime_message(self) -> None:
         for idx in range(NUM_MOTORS):
             self.msg.motor_cmd[idx].mode = 0x01
-            self.msg.motor_cmd[idx].kp = 20.0
-            self.msg.motor_cmd[idx].kd = 3.0
+            self.msg.motor_cmd[idx].kp = float(self._target_kp[idx])
+            self.msg.motor_cmd[idx].kd = float(self._target_kd[idx])
             self.msg.motor_cmd[idx].q = float(self._target_q[idx])
             self.msg.motor_cmd[idx].dq = 0.0
             self.msg.motor_cmd[idx].tau = 0.0
@@ -361,7 +375,9 @@ class LowLevelSaluteController:
         while self._running:
             with self.state_lock:
                 q_cmd = self._target_q.copy()
-            self._write_full_body_command(q_cmd)
+                kp_cmd = self._target_kp.copy()
+                kd_cmd = self._target_kd.copy()
+            self._write_full_body_command(q_cmd, kp_cmd, kd_cmd)
             time.sleep(0.004)
 
     def _publish_target(self, target_q: np.ndarray, duration: float, hold: bool = False) -> None:
@@ -381,26 +397,16 @@ class LowLevelSaluteController:
             with self.state_lock:
                 self._target_q[:] = target_q
 
-    def _write_full_body_command(self, q_cmd: np.ndarray) -> None:
+    def _write_full_body_command(self, q_cmd: np.ndarray, kp_cmd: np.ndarray, kd_cmd: np.ndarray) -> None:
         for idx in range(NUM_MOTORS):
             self.msg.motor_cmd[idx].mode = 0x01
             self.msg.motor_cmd[idx].q = float(q_cmd[idx])
             self.msg.motor_cmd[idx].dq = 0.0
             self.msg.motor_cmd[idx].tau = 0.0
-
-            if idx in RIGHT_ARM_INDICES:
-                if idx == 25:
-                    self.msg.motor_cmd[idx].kp = 140.0
-                    self.msg.motor_cmd[idx].kd = 5.0
-                elif idx >= 26:
-                    self.msg.motor_cmd[idx].kp = 70.0
-                    self.msg.motor_cmd[idx].kd = 3.0
-                else:
-                    self.msg.motor_cmd[idx].kp = 120.0
-                    self.msg.motor_cmd[idx].kd = 4.0
-            else:
-                self.msg.motor_cmd[idx].kp = 20.0
-                self.msg.motor_cmd[idx].kd = 3.0
+            
+            # Apply dynamic gains
+            self.msg.motor_cmd[idx].kp = float(kp_cmd[idx])
+            self.msg.motor_cmd[idx].kd = float(kd_cmd[idx])
 
         self.msg.crc = self.crc.Crc(self.msg)
         self.lowcmd_publisher.Write(self.msg)
@@ -431,6 +437,185 @@ class LowLevelSaluteController:
             time.sleep(1.5)
         finally:
             self._publish_target(rest_q, duration=1.2, hold=True)
+
+
+    def _publish_target_kp_kd(self, target_kp: np.ndarray, target_kd: np.ndarray, duration: float) -> None:
+        duration = max(0.0, duration)
+        steps = max(1, int(duration * 250))
+        with self.state_lock:
+            start_kp = self._target_kp.copy()
+            start_kd = self._target_kd.copy()
+        for step in range(steps):
+            alpha = (step + 1) / steps
+            with self.state_lock:
+                self._target_kp[:] = (1.0 - alpha) * start_kp + alpha * target_kp
+                self._target_kd[:] = (1.0 - alpha) * start_kd + alpha * target_kd
+            time.sleep(0.004)
+
+    def start_squat(self) -> None:
+        self.stop_animations()
+        self._animation_stop_event.clear()
+        self._animation_thread = threading.Thread(target=self._squat_loop, daemon=True)
+        self._animation_thread.start()
+
+    def start_lateral_raise(self) -> None:
+        self.stop_animations()
+        self._animation_stop_event.clear()
+        self._animation_thread = threading.Thread(target=self._lateral_raise_loop, daemon=True)
+        self._animation_thread.start()
+
+    def _squat_loop(self) -> None:
+        if not self.wait_for_state(timeout=3.0): return
+        
+        # High gains for full body
+        squat_kp = np.full(NUM_MOTORS, 80.0)
+        squat_kd = np.full(NUM_MOTORS, 3.0)
+        
+        # Legs and waist get powerful gains
+        for idx in [0,1,2,3,6,7,8,9]: # legs
+            squat_kp[idx] = 300.0 # hardware clamped from 500 for safety
+            squat_kd[idx] = 12.0
+        for idx in [4,5,10,11]:   # ankles
+            squat_kp[idx] = 200.0
+            squat_kd[idx] = 10.0
+        for idx in [12,13,14]:    # waist
+            squat_kp[idx] = 250.0
+            squat_kd[idx] = 12.0
+        for idx in [15,16,17,18,22,23,24,25]: # arms
+            squat_kp[idx] = 150.0
+            squat_kd[idx] = 8.0
+
+        STAND_POSE = {
+            "left_hip_pitch_joint": -0.40, "left_knee_joint": 0.80, "left_ankle_pitch_joint": -0.40,
+            "right_hip_pitch_joint": -0.40, "right_knee_joint": 0.80, "right_ankle_pitch_joint": -0.40,
+            "left_shoulder_roll_joint": 0.20, "right_shoulder_roll_joint": -0.20,
+        }
+        PUSHUP_READY_POSE = {
+            "left_hip_pitch_joint": -1.35, "left_knee_joint": 2.25, "left_ankle_pitch_joint": -0.95,
+            "right_hip_pitch_joint": -1.35, "right_knee_joint": 2.25, "right_ankle_pitch_joint": -0.95,
+            "waist_pitch_joint": 0.52, "left_shoulder_pitch_joint": 1.15, "right_shoulder_pitch_joint": 1.15,
+            "left_shoulder_roll_joint": 0.10, "right_shoulder_roll_joint": -0.10,
+            "left_elbow_joint": -1.55, "right_elbow_joint": -1.55, "left_wrist_pitch_joint": 0.45,
+            "right_wrist_pitch_joint": 0.45,
+        }
+        
+        with self.state_lock:
+            start_q = self.current_q.copy()
+            rest_kp = self._target_kp.copy()
+            rest_kd = self._target_kd.copy()
+        
+        q_stand = build_dds_pose(STAND_POSE, start_q)
+        q_pushup = build_dds_pose(PUSHUP_READY_POSE, start_q)
+        
+        # Smoothly transition kp/kd and go to STAND
+        self._publish_target_kp_kd(squat_kp, squat_kd, 2.0)
+        self._publish_target(q_stand, 2.0, hold=True)
+        
+        START_HOLD_S = 1.2
+        DESCENT_S = 5.0
+        BOTTOM_HOLD_S = 0.7
+        ASCENT_S = 4.0
+        TOP_HOLD_S = 0.7
+        cycle_len = DESCENT_S + BOTTOM_HOLD_S + ASCENT_S + TOP_HOLD_S
+
+        start_time = time.time()
+        while not self._animation_stop_event.is_set():
+            t = time.time() - start_time
+            if t < START_HOLD_S:
+                target_q = q_stand
+            else:
+                phase = (t - START_HOLD_S) % cycle_len
+                if phase < DESCENT_S:
+                    alpha = smoothstep(phase / DESCENT_S)
+                elif phase < DESCENT_S + BOTTOM_HOLD_S:
+                    alpha = 1.0
+                elif phase < DESCENT_S + BOTTOM_HOLD_S + ASCENT_S:
+                    rise_t = phase - (DESCENT_S + BOTTOM_HOLD_S)
+                    alpha = 1.0 - smoothstep(rise_t / ASCENT_S)
+                else:
+                    alpha = 0.0
+                target_q = (1.0 - alpha) * q_stand + alpha * q_pushup
+                
+            with self.state_lock:
+                self._target_q[:] = target_q
+            time.sleep(0.004)
+        
+        # Restore resting stance
+        self._publish_target(start_q, 2.0, hold=True)
+        self._publish_target_kp_kd(rest_kp, rest_kd, 1.0)
+        
+    def _lateral_raise_loop(self) -> None:
+        if not self.wait_for_state(timeout=3.0): return
+        
+        raise_kp = np.full(NUM_MOTORS, 80.0)
+        raise_kd = np.full(NUM_MOTORS, 3.0)
+        for idx in [0,1,2,3,6,7,8,9,4,5,10,11]: 
+            raise_kp[idx] = 150.0  # Solid legs
+            raise_kd[idx] = 8.0
+        for idx in [15,16,17,18,22,23,24,25]:
+            raise_kp[idx] = 180.0  # Strong arms
+            raise_kd[idx] = 8.0
+            
+        STAND_POSE = {
+            "left_hip_pitch_joint": -0.40, "left_knee_joint": 0.80, "left_ankle_pitch_joint": -0.40,
+            "right_hip_pitch_joint": -0.40, "right_knee_joint": 0.80, "right_ankle_pitch_joint": -0.40,
+            "left_shoulder_pitch_joint": 0.00, "left_shoulder_roll_joint": 0.08, "left_shoulder_yaw_joint": 0.00,
+            "left_elbow_joint": 0.18, "left_wrist_roll_joint": 0.00, "left_wrist_pitch_joint": 0.00, "left_wrist_yaw_joint": 0.00,
+            "right_shoulder_pitch_joint": 0.00, "right_shoulder_roll_joint": -0.08, "right_shoulder_yaw_joint": 0.00,
+            "right_elbow_joint": 0.18, "right_wrist_roll_joint": 0.00, "right_wrist_pitch_joint": 0.00, "right_wrist_yaw_joint": 0.00,
+        }
+        LATERAL_RAISE_POSE = {
+            "left_hip_pitch_joint": -0.40, "left_knee_joint": 0.80, "left_ankle_pitch_joint": -0.40,
+            "right_hip_pitch_joint": -0.40, "right_knee_joint": 0.80, "right_ankle_pitch_joint": -0.40,
+            "waist_pitch_joint": 0.00, "left_shoulder_pitch_joint": 0.05, "left_shoulder_roll_joint": 1.55, "left_shoulder_yaw_joint": 0.00,
+            "left_elbow_joint": 0.55, "left_wrist_roll_joint": 0.00, "left_wrist_pitch_joint": 0.00, "left_wrist_yaw_joint": 0.00,
+            "right_shoulder_pitch_joint": -0.05, "right_shoulder_roll_joint": -1.55, "right_shoulder_yaw_joint": 0.00,
+            "right_elbow_joint": 0.55, "right_wrist_roll_joint": 0.00, "right_wrist_pitch_joint": 0.00, "right_wrist_yaw_joint": 0.00,
+        }
+
+        with self.state_lock:
+            start_q = self.current_q.copy()
+            rest_kp = self._target_kp.copy()
+            rest_kd = self._target_kd.copy()
+            
+        q_stand = build_dds_pose(STAND_POSE, start_q)
+        q_raise = build_dds_pose(LATERAL_RAISE_POSE, start_q)
+        
+        self._publish_target_kp_kd(raise_kp, raise_kd, 2.0)
+        self._publish_target(q_stand, 2.0, hold=True)
+        
+        START_HOLD_S = 1.0
+        RAISE_S = 3.5
+        TOP_HOLD_S = 0.8
+        LOWER_S = 3.5
+        REST_HOLD_S = 0.8
+        cycle_len = RAISE_S + TOP_HOLD_S + LOWER_S + REST_HOLD_S
+
+        start_time = time.time()
+        while not self._animation_stop_event.is_set():
+            t = time.time() - start_time
+            if t < START_HOLD_S:
+                target_q = q_stand
+            else:
+                phase = (t - START_HOLD_S) % cycle_len
+                if phase < RAISE_S:
+                    alpha = smoothstep(phase / RAISE_S)
+                elif phase < RAISE_S + TOP_HOLD_S:
+                    alpha = 1.0
+                elif phase < RAISE_S + TOP_HOLD_S + LOWER_S:
+                    down_t = phase - (RAISE_S + TOP_HOLD_S)
+                    alpha = 1.0 - smoothstep(down_t / LOWER_S)
+                else:
+                    alpha = 0.0
+                target_q = (1.0 - alpha) * q_stand + alpha * q_raise
+                
+            with self.state_lock:
+                self._target_q[:] = target_q
+            time.sleep(0.004)
+
+        # Restore resting stance
+        self._publish_target(start_q, 2.0, hold=True)
+        self._publish_target_kp_kd(rest_kp, rest_kd, 1.0)
 
     def shutdown(self) -> None:
         self.stop_animations()
@@ -947,8 +1132,20 @@ class VoiceCommandSystem:
         if any(fuzzy_contains_phrase(text, phrase) for phrase in ("stand up", "stand", "get up", "high stand")):
             self._call_loco("HighStand")
             return
-        if any(fuzzy_contains_phrase(text, phrase) for phrase in ("sit down", "sit", "squat")):
+        if any(fuzzy_contains_phrase(text, phrase) for phrase in ("sit down", "sit")):
             self._call_loco("Sit")
+            return
+        if any(fuzzy_contains_phrase(text, phrase) for phrase in ("squat", "do a squat", "start squat")):
+            if self.salute_controller is not None:
+                self.salute_controller.start_squat()
+            else:
+                self.log("[warn] squat unavailable in audio-only mode")
+            return
+        if any(fuzzy_contains_phrase(text, phrase) for phrase in ("lateral raise", "shoulder raise", "fly", "lateral")):
+            if self.salute_controller is not None:
+                self.salute_controller.start_lateral_raise()
+            else:
+                self.log("[warn] lateral raise unavailable in audio-only mode")
             return
         if any(fuzzy_contains_phrase(text, phrase) for phrase in ("curl", "bicep", "flex", "start exercise")):
             if self.salute_controller is not None:
