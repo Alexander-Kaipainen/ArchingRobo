@@ -129,7 +129,34 @@ def resample_to_whisper_rate(samples: np.ndarray, capture_rate: float, whisper_r
 
 
 RIGHT_ARM_INDICES = [22, 23, 24, 25, 26, 27, 28]
-NUM_MOTORS = 29  # 29 body motors, ignoring the 14 hand motors
+NUM_MOTORS = 35  # Updated to 35 to cover all standard SDK motor slots
+
+JOINT_NAME_MAP = {
+    "left_hip_pitch_joint": 0, "left_hip_roll_joint": 1, "left_hip_yaw_joint": 2,
+    "left_knee_joint": 3,
+    "left_ankle_pitch_joint": 4, "left_ankle_roll_joint": 5,
+    "right_hip_pitch_joint": 6, "right_hip_roll_joint": 7, "right_hip_yaw_joint": 8,
+    "right_knee_joint": 9,
+    "right_ankle_pitch_joint": 10, "right_ankle_roll_joint": 11,
+    "waist_yaw_joint": 12, "waist_roll_joint": 13, "waist_pitch_joint": 14,
+    "left_shoulder_pitch_joint": 15, "left_shoulder_roll_joint": 16, "left_shoulder_yaw_joint": 17,
+    "left_elbow_joint": 18,
+    "left_wrist_roll_joint": 19, "left_wrist_pitch_joint": 20, "left_wrist_yaw_joint": 21,
+    "right_shoulder_pitch_joint": 22, "right_shoulder_roll_joint": 23, "right_shoulder_yaw_joint": 24,
+    "right_elbow_joint": 25,
+    "right_wrist_roll_joint": 26, "right_wrist_pitch_joint": 27, "right_wrist_yaw_joint": 28
+}
+
+def build_dds_pose(target_dict, current_q):
+    ret = current_q.copy()
+    for name, angle in target_dict.items():
+        if name in JOINT_NAME_MAP:
+            ret[JOINT_NAME_MAP[name]] = angle
+    return ret
+
+def smoothstep(x: float) -> float:
+    x = np.clip(x, 0.0, 1.0)
+    return x * x * (3.0 - 2.0 * x)
 
 
 def normalize_text(text: str) -> str:
@@ -315,10 +342,15 @@ class LowLevelSaluteController:
         self.msg.mode_pr = 0
 
         self.lowstate_subscriber = self.ChannelSubscriber("rt/lowstate", self.LowState)
-        self.lowstate_subscriber.Init(self._on_lowstate, 10)
 
         self.lowcmd_publisher = self.ChannelPublisher("rt/lowcmd", sdk["LowCmdMsgType"])
         self.lowcmd_publisher.Init()
+        
+        # Stabilization State
+        self.imu_quat = np.array([1.0, 0.0, 0.0, 0.0]) # w, x, y, z
+        self.imu_gyro = np.zeros(3)
+        self.imu_acc = np.zeros(3)
+        self._stabilization_enabled = True
         
         self._animation_thread = None
         self._animation_stop_event = threading.Event()
@@ -326,23 +358,48 @@ class LowLevelSaluteController:
         self._target_q = np.zeros(NUM_MOTORS, dtype=float)
         self._target_kp = np.full(NUM_MOTORS, 20.0, dtype=float)
         self._target_kd = np.full(NUM_MOTORS, 3.0, dtype=float)
-        # Restore right arm high gains
+        
+        # High standing gains for stability
         for idx in range(NUM_MOTORS):
-            if idx in RIGHT_ARM_INDICES:
-                if idx == 25:
+            if idx < 12: # Legs
+                self._target_kp[idx] = 500.0
+                self._target_kd[idx] = 20.0
+            elif idx < 15: # Waist
+                self._target_kp[idx] = 350.0
+                self._target_kd[idx] = 12.0
+            elif idx in RIGHT_ARM_INDICES:
+                if idx == 25: # Elbow
                     self._target_kp[idx] = 140.0
                     self._target_kd[idx] = 5.0
-                elif idx >= 26:
+                elif idx >= 26: # Wrist
                     self._target_kp[idx] = 70.0
                     self._target_kd[idx] = 3.0
-                else:
+                else: # Shoulder
                     self._target_kp[idx] = 120.0
                     self._target_kd[idx] = 4.0
+            else: # Fingers/Hands (29-34)
+                self._target_kp[idx] = 10.0
+                self._target_kd[idx] = 0.5
         
         self.wait_for_state(timeout=2.0)
+        
+        # Define a safe initial standing pose to prevent crumpling
+        STAND_POSE_VALS = {
+            "left_hip_pitch_joint": -0.40,
+            "left_knee_joint": 0.80,
+            "left_ankle_pitch_joint": -0.40,
+            "right_hip_pitch_joint": -0.40,
+            "right_knee_joint": 0.80,
+            "right_ankle_pitch_joint": -0.40,
+        }
+
         with self.state_lock:
-            self._target_q[:] = self.current_q[:]
+            # Instead of current_q, use build_dds_pose to force a standing target
+            self._target_q[:] = build_dds_pose(STAND_POSE_VALS, self.current_q)
             self._prime_message()
+
+        self.lowstate_subscriber.Init(self._on_lowstate, 10)
+        self.lowcmd_publisher.Init()
 
         self.publish_thread = threading.Thread(target=self._publish_loop, daemon=True)
         self.publish_thread.start()
@@ -355,9 +412,30 @@ class LowLevelSaluteController:
             for idx in range(limit):
                 self.current_q[idx] = msg.motor_state[idx].q
                 self.current_dq[idx] = msg.motor_state[idx].dq
+            
+            # Extract IMU
+            self.imu_quat[:] = msg.imu_state.quaternion
+            self.imu_gyro[:] = msg.imu_state.gyroscope
+            self.imu_acc[:] = msg.imu_state.accelerometer
+            
             self.msg.mode_machine = msg.mode_machine
             self.latest_state_time = time.time()
             self._state_ready.set()
+
+    def _get_euler_pitch_roll(self):
+        w, x, y, z = self.imu_quat
+        # Roll (x-axis rotation)
+        sinr_cosp = 2 * (w * x + y * z)
+        cosr_cosp = 1 - 2 * (x * x + y * y)
+        roll = np.arctan2(sinr_cosp, cosr_cosp)
+
+        # Pitch (y-axis rotation)
+        sinp = 2 * (w * y - z * x)
+        if abs(sinp) >= 1:
+            pitch = np.sign(sinp) * np.pi / 2
+        else:
+            pitch = np.arcsin(sinp)
+        return pitch, roll
 
     def wait_for_state(self, timeout: float = 10.0) -> bool:
         return self._state_ready.wait(timeout=timeout)
@@ -377,6 +455,30 @@ class LowLevelSaluteController:
                 q_cmd = self._target_q.copy()
                 kp_cmd = self._target_kp.copy()
                 kd_cmd = self._target_kd.copy()
+                pitch, roll = self._get_euler_pitch_roll()
+                gyro = self.imu_gyro.copy()
+
+            if self._stabilization_enabled:
+                # Basic PD stabilization for standing
+                # Adjust ankle pitch (4, 10) based on torso pitch
+                # Adjust hip roll (1, 7) based on torso roll
+                
+                # Gains (Tweak these if the robot vibrates or falls)
+                kp_pitch = 0.45
+                kd_pitch = 0.05
+                kp_roll = 0.25
+                kd_roll = 0.03
+
+                pitch_corr = kp_pitch * pitch + kd_pitch * gyro[1]
+                roll_corr = kp_roll * roll + kd_roll * gyro[0]
+
+                # Apply to legs
+                q_cmd[4] -= pitch_corr # Left Ankle Pitch
+                q_cmd[10] -= pitch_corr # Right Ankle Pitch
+                
+                q_cmd[1] += roll_corr # Left Hip Roll
+                q_cmd[7] += roll_corr # Right Hip Roll
+
             self._write_full_body_command(q_cmd, kp_cmd, kd_cmd)
             time.sleep(0.004)
 
