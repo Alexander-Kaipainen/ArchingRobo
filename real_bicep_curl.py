@@ -31,13 +31,7 @@ def main():
     try:
         # Initialize the controller
         controller = G1_29_ArmController(network_interface=interface, domain_id=domain_id)
-        
-        # PROPER CONTROL: Disable the internal background publish thread
-        # This prevents the 10Hz "jitter fight" between our loop and the internal one.
-        print("Disabling internal background thread for direct hardware sync...")
-        controller._running = False
-        time.sleep(0.1) 
-        controller._running = True 
+        controller.speed_instant_max()
     except TimeoutError as e:
         if args.sim:
             print(f"ERROR: {e}")
@@ -59,12 +53,13 @@ def main():
     ]
     
     # Tuned for professional responsiveness
-    TUNED_KP = 180.0  
-    TUNED_KD = 8.0    
+    TUNED_KP = 145.0
+    TUNED_KD = 6.5
     
     for j_idx in main_arm_joints:
         controller.msg.motor_cmd[j_idx].kp = TUNED_KP
         controller.msg.motor_cmd[j_idx].kd = TUNED_KD
+    controller.ctrl_dual_arm(controller.get_current_dual_arm_q(), np.zeros(14))
 
     print(f"\nDirect Control Tuned: KP={TUNED_KP}, KD={TUNED_KD}")
     
@@ -84,25 +79,19 @@ def main():
         t0 = time.perf_counter()
         alpha = (i + 1) / steps
         cmd_q = (1 - alpha) * start_q + alpha * prep_q
-        cmd_dq = (prep_q - start_q) / duration
-        for idx, mid in enumerate(G1_29_JointArmIndex):
-            controller.msg.motor_cmd[mid].q = cmd_q[idx]
-            controller.msg.motor_cmd[mid].dq = cmd_dq[idx]
-            controller.msg.motor_cmd[mid].tau = 0
-        controller.msg.crc = controller.crc.Crc(controller.msg)
-        controller.lowcmd_publisher.Write(controller.msg)
+        controller.ctrl_dual_arm(cmd_q, np.zeros(14))
         dt = time.perf_counter() - t0
         if dt < 0.004:
             time.sleep(0.004 - dt)
 
     # 2. CONTINUOUS BICEP CURL (FILTERED + RAMPED)
-    CURL_PERIOD = 6.0
+    CURL_PERIOD = 5.5
     ELBOW_EXTENDED = 0.0
     ELBOW_FLEXED = 1.4
-    RAMP_UP_TIME = 3.0  # Seconds to reach full amplitude
+    RAMP_UP_TIME = 2.5  # Seconds to reach full amplitude
     
     # LPF Parameters (20Hz Cutoff at 250Hz sampling)
-    ALPHA = 0.3 # Smoothing factor
+    ALPHA = 0.45 # Smoothing factor
     filtered_q = prep_q.copy()
     filtered_dq = np.zeros(14)
 
@@ -141,14 +130,7 @@ def main():
             filtered_q = ALPHA * target_q_raw + (1.0 - ALPHA) * filtered_q
             filtered_dq = ALPHA * target_dq_raw + (1.0 - ALPHA) * filtered_dq
             
-            # Manually update the DDS message
-            for idx, mid_id in enumerate(G1_29_JointArmIndex):
-                controller.msg.motor_cmd[mid_id].q = filtered_q[idx]
-                controller.msg.motor_cmd[mid_id].dq = filtered_dq[idx]
-                controller.msg.motor_cmd[mid_id].tau = 0
-            
-            controller.msg.crc = controller.crc.Crc(controller.msg)
-            controller.lowcmd_publisher.Write(controller.msg)
+            controller.ctrl_dual_arm(filtered_q, np.zeros(14))
             
             # Precise 250Hz sync
             dt = time.perf_counter() - t0

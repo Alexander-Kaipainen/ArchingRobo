@@ -55,7 +55,6 @@ def load_unitree_modules() -> dict[str, Any]:
             trace_path = f"/tmp/cdds.{os.getpid()}.LOG"
             dds_channel.ChannelConfigHasInterface = trace_config.replace("/tmp/cdds.LOG", trace_path)
 
-        from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
         from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
         from unitree_sdk2py.idl.default import unitree_hg_msg_dds__HandCmd_
         from unitree_sdk2py.idl.unitree_hg.msg.dds_ import HandCmd_
@@ -65,6 +64,11 @@ def load_unitree_modules() -> dict[str, Any]:
         raise RuntimeError(
             "Unitree SDK dependencies are missing in this interpreter. Use the robot's working Python env for control mode."
         ) from error
+
+    try:
+        from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
+    except ModuleNotFoundError:
+        LocoClient = None
 
     return {
         "ChannelFactoryInitialize": ChannelFactoryInitialize,
@@ -130,6 +134,40 @@ def resample_to_whisper_rate(samples: np.ndarray, capture_rate: float, whisper_r
 
 RIGHT_ARM_INDICES = [22, 23, 24, 25, 26, 27, 28]
 NUM_MOTORS = 35  # Updated to 35 to cover all standard SDK motor slots
+CONTROL_DT = 1.0 / 250.0
+SAFETY_GAIN_SCALE = 0.70
+MAX_KP = 350.0
+MAX_KD = 15.0
+
+HAND_INDICES = list(range(29, 35))
+
+MAX_DQ_PER_SEC = np.full(NUM_MOTORS, 0.8, dtype=float)
+MAX_DQ_PER_SEC[:12] = 1.5
+MAX_DQ_PER_SEC[12:15] = 1.2
+MAX_DQ_PER_SEC[15:29] = 0.6
+MAX_DQ_PER_SEC[19:22] = 0.4
+MAX_DQ_PER_SEC[26:29] = 0.4
+MAX_DQ_PER_SEC[29:] = 0.5
+
+JOINT_LIMITS_MIN = np.full(NUM_MOTORS, np.nan, dtype=float)
+JOINT_LIMITS_MAX = np.full(NUM_MOTORS, np.nan, dtype=float)
+
+# Arm and wrist soft limits (conservative, adjust if needed)
+JOINT_LIMITS_MIN[15:22] = [-1.4, -1.6, -1.4, -1.6, -1.6, -1.2, -1.6]
+JOINT_LIMITS_MAX[15:22] = [1.4, 1.6, 1.4, 1.6, 1.6, 1.2, 1.6]
+JOINT_LIMITS_MIN[22:29] = [-1.4, -1.6, -1.4, -1.6, -1.6, -1.2, -1.6]
+JOINT_LIMITS_MAX[22:29] = [1.4, 1.6, 1.4, 1.6, 1.6, 1.2, 1.6]
+
+def clamp_joint_limits(q_cmd: np.ndarray) -> np.ndarray:
+    q_safe = q_cmd.copy()
+    for idx in range(NUM_MOTORS):
+        q_min = JOINT_LIMITS_MIN[idx]
+        q_max = JOINT_LIMITS_MAX[idx]
+        if not np.isnan(q_min) and q_safe[idx] < q_min:
+            q_safe[idx] = q_min
+        if not np.isnan(q_max) and q_safe[idx] > q_max:
+            q_safe[idx] = q_max
+    return q_safe
 
 JOINT_NAME_MAP = {
     "left_hip_pitch_joint": 0, "left_hip_roll_joint": 1, "left_hip_yaw_joint": 2,
@@ -341,8 +379,6 @@ class LowLevelSaluteController:
         self.msg = sdk["LowCmdFactory"]()
         self.msg.mode_pr = 0
 
-        self.lowstate_subscriber = self.ChannelSubscriber("rt/lowstate", self.LowState)
-
         self.lowcmd_publisher = self.ChannelPublisher("rt/lowcmd", sdk["LowCmdMsgType"])
         self.lowcmd_publisher.Init()
         
@@ -355,9 +391,16 @@ class LowLevelSaluteController:
         self._animation_thread = None
         self._animation_stop_event = threading.Event()
         self._running = True
+        self._hand_enabled = False
+        self._last_cmd_log = 0.0
+        self._last_cmd_q = np.zeros(NUM_MOTORS, dtype=float)
+        self._override_active = False
+        self._pose_initialized = False
         self._target_q = np.zeros(NUM_MOTORS, dtype=float)
         self._target_kp = np.full(NUM_MOTORS, 20.0, dtype=float)
         self._target_kd = np.full(NUM_MOTORS, 3.0, dtype=float)
+
+        self.lowstate_subscriber = self.ChannelSubscriber("rt/lowstate", self.LowState)
         
         # High standing gains for stability
         for idx in range(NUM_MOTORS):
@@ -380,25 +423,26 @@ class LowLevelSaluteController:
             else: # Fingers/Hands (29-34)
                 self._target_kp[idx] = 10.0
                 self._target_kd[idx] = 0.5
-        
-        self.wait_for_state(timeout=2.0)
-        
-        # Define a safe initial standing pose to prevent crumpling
-        STAND_POSE_VALS = {
-            "left_hip_pitch_joint": -0.40,
-            "left_knee_joint": 0.80,
-            "left_ankle_pitch_joint": -0.40,
-            "right_hip_pitch_joint": -0.40,
-            "right_knee_joint": 0.80,
-            "right_ankle_pitch_joint": -0.40,
-        }
 
-        with self.state_lock:
-            # Instead of current_q, use build_dds_pose to force a standing target
-            self._target_q[:] = build_dds_pose(STAND_POSE_VALS, self.current_q)
-            self._prime_message()
+        # Apply global safety scaling
+        self._target_kp *= SAFETY_GAIN_SCALE
+        self._target_kd *= SAFETY_GAIN_SCALE
 
+        if not self._hand_enabled:
+            for idx in HAND_INDICES:
+                self._target_kp[idx] = 0.0
+                self._target_kd[idx] = 0.0
+        
         self.lowstate_subscriber.Init(self._on_lowstate, 10)
+        if not self.wait_for_state(timeout=10.0):
+            print("[salute_controller] lowstate not ready; holding commands until state arrives")
+
+        if self._pose_initialized:
+            with self.state_lock:
+                self._target_q[:] = self.current_q.copy()
+                self._last_cmd_q[:] = self.current_q.copy()
+                self._prime_message()
+
         self.lowcmd_publisher.Init()
 
         self.publish_thread = threading.Thread(target=self._publish_loop, daemon=True)
@@ -421,6 +465,11 @@ class LowLevelSaluteController:
             self.msg.mode_machine = msg.mode_machine
             self.latest_state_time = time.time()
             self._state_ready.set()
+            if not self._pose_initialized:
+                self._target_q[:] = self.current_q.copy()
+                self._last_cmd_q[:] = self.current_q.copy()
+                self._prime_message()
+                self._pose_initialized = True
 
     def _get_euler_pitch_roll(self):
         w, x, y, z = self.imu_quat
@@ -451,12 +500,26 @@ class LowLevelSaluteController:
 
     def _publish_loop(self) -> None:
         while self._running:
+            if not self._state_ready.is_set():
+                time.sleep(CONTROL_DT)
+                continue
+
+            if self._override_active:
+                time.sleep(CONTROL_DT)
+                continue
             with self.state_lock:
                 q_cmd = self._target_q.copy()
                 kp_cmd = self._target_kp.copy()
                 kd_cmd = self._target_kd.copy()
+                current_q = self.current_q.copy()
+                latest_state_time = self.latest_state_time
                 pitch, roll = self._get_euler_pitch_roll()
                 gyro = self.imu_gyro.copy()
+
+            if latest_state_time and (time.time() - latest_state_time) > 0.5:
+                self._emergency_hold(current_q)
+                time.sleep(CONTROL_DT)
+                continue
 
             if self._stabilization_enabled:
                 # Basic PD stabilization for standing
@@ -479,7 +542,7 @@ class LowLevelSaluteController:
                 q_cmd[1] += roll_corr # Left Hip Roll
                 q_cmd[7] += roll_corr # Right Hip Roll
 
-            self._write_full_body_command(q_cmd, kp_cmd, kd_cmd)
+            self._write_full_body_command(q_cmd, kp_cmd, kd_cmd, current_q)
             time.sleep(0.004)
 
     def _publish_target(self, target_q: np.ndarray, duration: float, hold: bool = False) -> None:
@@ -499,16 +562,49 @@ class LowLevelSaluteController:
             with self.state_lock:
                 self._target_q[:] = target_q
 
-    def _write_full_body_command(self, q_cmd: np.ndarray, kp_cmd: np.ndarray, kd_cmd: np.ndarray) -> None:
+    def _write_full_body_command(
+        self,
+        q_cmd: np.ndarray,
+        kp_cmd: np.ndarray,
+        kd_cmd: np.ndarray,
+        current_q: np.ndarray,
+    ) -> None:
+        q_safe = clamp_joint_limits(q_cmd)
+        max_delta = MAX_DQ_PER_SEC * CONTROL_DT
+        with self.state_lock:
+            base_q = self._last_cmd_q.copy()
+        delta = np.clip(q_safe - base_q, -max_delta, max_delta)
+        q_safe = base_q + delta
+
+        kp_safe = np.clip(kp_cmd, 0.0, MAX_KP)
+        kd_safe = np.clip(kd_cmd, 0.0, MAX_KD)
+
+        if not self._hand_enabled:
+            q_safe[HAND_INDICES] = current_q[HAND_INDICES]
+            kp_safe[HAND_INDICES] = 0.0
+            kd_safe[HAND_INDICES] = 0.0
+
         for idx in range(NUM_MOTORS):
             self.msg.motor_cmd[idx].mode = 0x01
-            self.msg.motor_cmd[idx].q = float(q_cmd[idx])
+            self.msg.motor_cmd[idx].q = float(q_safe[idx])
             self.msg.motor_cmd[idx].dq = 0.0
             self.msg.motor_cmd[idx].tau = 0.0
             
             # Apply dynamic gains
-            self.msg.motor_cmd[idx].kp = float(kp_cmd[idx])
-            self.msg.motor_cmd[idx].kd = float(kd_cmd[idx])
+            self.msg.motor_cmd[idx].kp = float(kp_safe[idx])
+            self.msg.motor_cmd[idx].kd = float(kd_safe[idx])
+
+        with self.state_lock:
+            self._last_cmd_q[:] = q_safe
+
+        now = time.time()
+        if now - self._last_cmd_log >= 1.0:
+            self._last_cmd_log = now
+            print(
+                "[salute_controller] cmd "
+                f"shoulder_pitch={q_safe[22]:.2f} elbow={q_safe[25]:.2f}",
+                flush=True,
+            )
 
         self.msg.crc = self.crc.Crc(self.msg)
         self.lowcmd_publisher.Write(self.msg)
@@ -519,26 +615,74 @@ class LowLevelSaluteController:
             return
 
         with self.state_lock:
-            self._target_q[:] = self.current_q[:]
             rest_q = self.current_q.copy()
+            self._target_q[:] = rest_q
 
         salute_q = rest_q.copy()
-        # Proper Right Arm Salute (Military Style)
-        # Ultra-conservative clearance: -1.0 elbow and 0.0 yaw.
-        salute_q[22] = -1.00  # Shoulder Pitch
-        salute_q[23] = -1.50  # Shoulder Roll: Move arm wide
-        salute_q[24] = 0.00   # Shoulder Yaw: No inward rotation
-        salute_q[25] = -0.45  # ELBOW: Conservative 90-degree bend
-        salute_q[26] = 0.00
-        salute_q[27] = -0.40  # Wrist Pitch
-        salute_q[28] = 0.00
+        # Keep the salute low and wide so the forearm stays clear of the face.
+        salute_q[22] = np.clip(-0.18, JOINT_LIMITS_MIN[22], JOINT_LIMITS_MAX[22])
+        salute_q[23] = np.clip(-1.00, JOINT_LIMITS_MIN[23], JOINT_LIMITS_MAX[23])
+        salute_q[24] = np.clip(0.00, JOINT_LIMITS_MIN[24], JOINT_LIMITS_MAX[24])
+        salute_q[25] = np.clip(-0.18, JOINT_LIMITS_MIN[25], JOINT_LIMITS_MAX[25])
+        salute_q[26] = np.clip(0.00, JOINT_LIMITS_MIN[26], JOINT_LIMITS_MAX[26])
+        salute_q[27] = np.clip(-0.08, JOINT_LIMITS_MIN[27], JOINT_LIMITS_MAX[27])
+        salute_q[28] = np.clip(0.00, JOINT_LIMITS_MIN[28], JOINT_LIMITS_MAX[28])
 
-        print("[state] executing salute (ultra-wide clearance)")
+        print(
+            "[state] executing salute (conservative clearance) "
+            f"(shoulder_pitch={salute_q[22]:.2f}, elbow={salute_q[25]:.2f})"
+        )
+        previous_stabilization = self._stabilization_enabled
         try:
-            self._publish_target(salute_q, duration=0.8, hold=True)
-            time.sleep(1.5)
+            self._stabilization_enabled = False
+            with self.state_lock:
+                start_q = self.current_q.copy()
+                kp_cmd = self._target_kp.copy() * 0.4
+                kd_cmd = self._target_kd.copy() * 0.4
+
+            self._override_active = True
+            steps = max(1, int(round(1.0 / CONTROL_DT)))
+            for step in range(steps):
+                alpha = (step + 1) / steps
+                with self.state_lock:
+                    current_q = self.current_q.copy()
+                q_cmd = (1.0 - alpha) * start_q + alpha * salute_q
+                self._write_full_body_command(q_cmd, kp_cmd, kd_cmd, current_q)
+                time.sleep(CONTROL_DT)
+
+            time.sleep(0.3)
         finally:
-            self._publish_target(rest_q, duration=1.2, hold=True)
+            steps = max(1, int(round(0.9 / CONTROL_DT)))
+            with self.state_lock:
+                kp_cmd = self._target_kp.copy()
+                kd_cmd = self._target_kd.copy()
+            for step in range(steps):
+                alpha = (step + 1) / steps
+                with self.state_lock:
+                    current_q = self.current_q.copy()
+                q_cmd = (1.0 - alpha) * salute_q + alpha * rest_q
+                self._write_full_body_command(q_cmd, kp_cmd, kd_cmd, current_q)
+                time.sleep(CONTROL_DT)
+            self._override_active = False
+            self._stabilization_enabled = previous_stabilization
+
+    def _emergency_hold(self, current_q: np.ndarray) -> None:
+        with self.state_lock:
+            self._target_q[:] = current_q
+            self._last_cmd_q[:] = current_q
+            hold_kp = np.zeros(NUM_MOTORS, dtype=float)
+            hold_kd = np.zeros(NUM_MOTORS, dtype=float)
+            hold_kp[:12] = 200.0
+            hold_kd[:12] = 8.0
+            hold_kp[12:15] = 150.0
+            hold_kd[12:15] = 6.0
+            hold_kp[15:29] = 60.0
+            hold_kd[15:29] = 2.0
+            self._target_kp[:] = hold_kp * SAFETY_GAIN_SCALE
+            self._target_kd[:] = hold_kd * SAFETY_GAIN_SCALE
+            if not self._hand_enabled:
+                self._target_kp[HAND_INDICES] = 0.0
+                self._target_kd[HAND_INDICES] = 0.0
 
 
     def _publish_target_kp_kd(self, target_kp: np.ndarray, target_kd: np.ndarray, duration: float) -> None:
@@ -724,6 +868,12 @@ class LowLevelSaluteController:
         self._running = False
         if hasattr(self, 'publish_thread'):
             self.publish_thread.join(timeout=0.1)
+
+    def emergency_stop(self) -> None:
+        self.stop_animations()
+        with self.state_lock:
+            current_q = self.current_q.copy()
+        self._emergency_hold(current_q)
 
     def start_bicep_curl(self) -> None:
         """Start a continuous bicep curl animation in a background thread."""
@@ -941,11 +1091,8 @@ class VoiceCommandSystem:
         self.loco = None
         if not self.audio_only:
             self.salute_controller = LowLevelSaluteController(interface, domain_id)
-            try:
-                self.hand_controller = DexHandController()
-            except Exception as error:
-                self.log(f"[warn] hand controller unavailable: {error}")
-                self.hand_controller = None
+            self.hand_controller = None
+            self.log("[safety] hand commands disabled")
             self.loco = self._init_loco_client()
         else:
             self.log("[state] audio-only mode: skipping DDS and robot controllers")
@@ -953,6 +1100,9 @@ class VoiceCommandSystem:
     def _init_loco_client(self) -> Optional["LocoClient"]:
         try:
             sdk = load_unitree_modules()
+            if not sdk.get("LocoClient"):
+                self.log("[warn] loco client unavailable: unitree_sdk2py.g1 not installed")
+                return None
             client = sdk["LocoClient"]()
             client.Init()
             client.Start()
@@ -1230,6 +1380,7 @@ class VoiceCommandSystem:
             self._call_loco("StopMove")
             if self.salute_controller is not None:
                 self.salute_controller.stop_animations()
+                self.salute_controller.emergency_stop()
             return
         if any(fuzzy_contains_phrase(text, phrase) for phrase in ("stand up", "stand", "get up", "high stand")):
             self._call_loco("HighStand")

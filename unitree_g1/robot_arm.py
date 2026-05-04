@@ -25,6 +25,8 @@ kTopicLowCommand = "rt/lowcmd"
 kTopicLowState = "rt/lowstate"
 G1_29_Num_Motors = 35
 H1_2_Num_Motors = 35
+
+SAFETY_GAIN_SCALE = 0.70
  
 
 class MotorState:
@@ -58,15 +60,15 @@ class G1_29_ArmController:
         self.q_target = np.zeros(14)
         self.tauff_target = np.zeros(14)
 
-        self.kp_high = 300.0
-        self.kd_high = 3.0
-        self.kp_low = 80.0
-        self.kd_low = 3.0
-        self.kp_wrist = 40.0
-        self.kd_wrist = 1.5
+        self.kp_high = 300.0 * SAFETY_GAIN_SCALE
+        self.kd_high = 3.0 * SAFETY_GAIN_SCALE
+        self.kp_low = 80.0 * SAFETY_GAIN_SCALE
+        self.kd_low = 3.0 * SAFETY_GAIN_SCALE
+        self.kp_wrist = 40.0 * SAFETY_GAIN_SCALE
+        self.kd_wrist = 1.5 * SAFETY_GAIN_SCALE
 
         self.all_motor_q = None
-        self.arm_velocity_limit = 20.0
+        self.arm_velocity_limit = 16.0
         self.control_dt = 1.0 / 250.0
 
         self._speed_gradual_max = False

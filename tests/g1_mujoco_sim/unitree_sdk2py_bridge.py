@@ -3,6 +3,7 @@ import numpy as np
 import pygame
 import sys
 import struct
+import time
 
 from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelPublisher
 
@@ -108,6 +109,62 @@ class UnitreeSdk2Bridge:
         )
         self.WirelessControllerThread.Start()
 
+        # joystick
+        self.key_map = {
+            "R1": 0,
+            "L1": 1,
+            "start": 2,
+            "select": 3,
+            "R2": 4,
+            "L2": 5,
+            "F1": 6,
+            "F2": 7,
+            "A": 8,
+            "B": 9,
+            "X": 10,
+            "Y": 11,
+            "up": 12,
+            "right": 13,
+            "down": 14,
+            "left": 15,
+        }
+
+        # Motor classification
+        self.weak_motors = [
+            G1_29_JointIndex.kLeftAnklePitch.value,
+            G1_29_JointIndex.kRightAnklePitch.value,
+            G1_29_JointIndex.kLeftShoulderPitch.value,
+            G1_29_JointIndex.kLeftShoulderRoll.value,
+            G1_29_JointIndex.kLeftShoulderYaw.value,
+            G1_29_JointIndex.kLeftElbow.value,
+            G1_29_JointIndex.kRightShoulderPitch.value,
+            G1_29_JointIndex.kRightShoulderRoll.value,
+            G1_29_JointIndex.kRightShoulderYaw.value,
+            G1_29_JointIndex.kRightElbow.value,
+        ]
+
+        self.wrist_motors = [
+            G1_29_JointIndex.kLeftWristRoll.value,
+            G1_29_JointIndex.kLeftWristPitch.value,
+            G1_29_JointIndex.kLeftWristyaw.value,
+            G1_29_JointIndex.kRightWristRoll.value,
+            G1_29_JointIndex.kRightWristPitch.value,
+            G1_29_JointIndex.kRightWristYaw.value,
+        ]
+
+        # Motor-specific gains
+        self.gains = {
+            'high_torque': {'kp': 300.0, 'kd': 3.0},
+            'low_torque': {'kp': 80.0, 'kd': 3.0},
+            'wrist': {'kp': 40.0, 'kd': 1.5}
+        }
+
+        # Velocity limits
+        self.arm_velocity_limit = 20.0
+
+        self._cmd_count = 0
+        self._last_cmd_log = 0.0
+
         self.low_cmd_suber = ChannelSubscriber(TOPIC_LOWCMD, LowCmd_)
         self.low_cmd_suber.Init(self.LowCmdHandler, 10)
 
@@ -163,61 +220,15 @@ class UnitreeSdk2Bridge:
             self.left_hand_cmd_suber.Init(self.LeftHandCmdHandler, 10)
             self.right_hand_cmd_suber.Init(self.RightHandCmdHandler, 10)
 
-        # joystick
-        self.key_map = {
-            "R1": 0,
-            "L1": 1,
-            "start": 2,
-            "select": 3,
-            "R2": 4,
-            "L2": 5,
-            "F1": 6,
-            "F2": 7,
-            "A": 8,
-            "B": 9,
-            "X": 10,
-            "Y": 11,
-            "up": 12,
-            "right": 13,
-            "down": 14,
-            "left": 15,
-        }
-
-        # Motor classification
-        self.weak_motors = [
-            G1_29_JointIndex.kLeftAnklePitch.value,
-            G1_29_JointIndex.kRightAnklePitch.value,
-            G1_29_JointIndex.kLeftShoulderPitch.value,
-            G1_29_JointIndex.kLeftShoulderRoll.value,
-            G1_29_JointIndex.kLeftShoulderYaw.value,
-            G1_29_JointIndex.kLeftElbow.value,
-            G1_29_JointIndex.kRightShoulderPitch.value,
-            G1_29_JointIndex.kRightShoulderRoll.value,
-            G1_29_JointIndex.kRightShoulderYaw.value,
-            G1_29_JointIndex.kRightElbow.value,
-        ]
-
-        self.wrist_motors = [
-            G1_29_JointIndex.kLeftWristRoll.value,
-            G1_29_JointIndex.kLeftWristPitch.value,
-            G1_29_JointIndex.kLeftWristyaw.value,
-            G1_29_JointIndex.kRightWristRoll.value,
-            G1_29_JointIndex.kRightWristPitch.value,
-            G1_29_JointIndex.kRightWristYaw.value,
-        ]
-
-        # Motor-specific gains
-        self.gains = {
-            'high_torque': {'kp': 300.0, 'kd': 3.0},
-            'low_torque': {'kp': 80.0, 'kd': 3.0},
-            'wrist': {'kp': 40.0, 'kd': 1.5}
-        }
-
-        # Velocity limits
-        self.arm_velocity_limit = 20.0
-
     def LowCmdHandler(self, msg: LowCmd_):
         if self.mj_data != None:
+            self._cmd_count += 1
+            now = time.time()
+            if now - self._last_cmd_log >= 1.0:
+                self._last_cmd_log = now
+                shoulder_pitch = msg.motor_cmd[G1_29_JointIndex.kRightShoulderPitch.value].q
+                elbow = msg.motor_cmd[G1_29_JointIndex.kRightElbow.value].q
+                print(f"[sim] lowcmd #{self._cmd_count} shoulder_pitch={shoulder_pitch:.2f} elbow={elbow:.2f}")
             for i in range(self.body_motors):
                 # Get appropriate gains based on motor type
                 if i in self.wrist_motors:
